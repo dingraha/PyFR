@@ -49,12 +49,14 @@ def _closest_upts_kd(etypes, eupts, pts):
 
 
 def _closest_upts(etypes, eupts, pts):
-    try:
-        # Attempt to use a KD-tree based approach
-        yield from _closest_upts_kd(etypes, eupts, pts)
-    except ImportError:
-        # Otherwise fall back to brute force
-        yield from _closest_upts_bf(etypes, eupts, pts)
+    #try:
+    #    # Attempt to use a KD-tree based approach
+    #    yield from _closest_upts_kd(etypes, eupts, pts)
+    #except ImportError:
+    #    # Otherwise fall back to brute force
+    #    yield from _closest_upts_bf(etypes, eupts, pts)
+
+    yield from _closest_upts_bf(etypes, eupts, pts)
 
 
 class SamplerPlugin(BasePlugin):
@@ -90,6 +92,7 @@ class SamplerPlugin(BasePlugin):
         # Process these points
         for cp in closest:
             # Reduce cp over all partitions
+            print("cp = {}".format(cp))
             mcp, mrank = comm.allreduce(cp, op=get_mpi('minloc'))
 
             # Store the rank responsible along with the info
