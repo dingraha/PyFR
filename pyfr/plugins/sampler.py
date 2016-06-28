@@ -93,7 +93,9 @@ class SamplerPlugin(BasePlugin):
         for cp in closest:
             # Reduce cp over all partitions
             print("cp = {}".format(cp))
-            mcp, mrank = comm.allreduce(cp, op=get_mpi('minloc'))
+            all_reduce_result = comm.allreduce(cp, op=get_mpi('minloc'))
+            print("all_reduce_result = {}".format(all_reduce_result))
+            mcp, mrank = all_reduce_result
 
             # Store the rank responsible along with the info
             ptsrank.append(mrank)
