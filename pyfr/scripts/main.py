@@ -12,7 +12,7 @@ import h5py
 
 from pyfr.backends import BaseBackend, get_backend
 from pyfr.inifile import Inifile
-from pyfr.mpiutil import register_finalize_handler, get_comm_rank_root
+from pyfr.mpiutil import register_finalize_handler
 from pyfr.partitioners import BasePartitioner, get_partitioner
 from pyfr.parallel_partitioners import BaseParallelPartitioner, get_parallel_partitioner
 from pyfr.progress_bar import ProgressBar
@@ -215,22 +215,8 @@ def process_parallel_partition(args):
     # Ensure MPI is suitably cleaned up
     register_finalize_handler()
 
-    # Get the number of MPI ranks.
-    comm, rank, root = get_comm_rank_root()
-    print('nparts = %d, comm.size = %d, rank = %d, root = %d' % (nparts,
-          comm.size, rank, root))
-    if nparts != comm.size:
-        raise RuntimeError('Asking for %d partitions but running with '
-                           '%d MPI ranks' % (nparts, comm.size))
-
-    # Get the total number of elements in the mesh.
-    mesh = NativeReader(args.mesh)
-    print(mesh.partition_info('spt'))
-    nel = sum([n[0] for et, n in mesh.partition_info('spt').items()])
-    print('nel = %d' % nel)
-
     # Partition the mesh
-    #mesh, part_soln_fn = part.partition(NativeReader(args.mesh))
+    mesh, part_soln_fn = part.partition(NativeReader(args.mesh))
 
 def process_export(args):
     # Get writer instance by specified type or outf extension

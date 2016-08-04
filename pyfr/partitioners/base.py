@@ -126,6 +126,9 @@ class BasePartitioner(object):
         vwts = np.array([self._ele_wts[t] for t, i in vetimap])
         ewts = np.ones_like(etab)
 
+        print('vetimap =\n{}'.format(vetimap))
+        print('etivmap =\n{}'.format(etivmap))
+
         return Graph(vtab, etab, vwts, ewts), vetimap
 
     def _partition_graph(self, graph, partwts):
@@ -233,6 +236,7 @@ class BasePartitioner(object):
         if len(self.partwts) > 1:
             # Obtain the dual graph for this mesh
             graph, vetimap = self._construct_graph(mesh)
+            print('graph =\n{}'.format(graph))
 
             # Partition the graph
             vparts = self._partition_graph(graph, self.partwts)
