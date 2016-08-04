@@ -12,8 +12,9 @@ import h5py
 
 from pyfr.backends import BaseBackend, get_backend
 from pyfr.inifile import Inifile
-from pyfr.mpiutil import register_finalize_handler
+from pyfr.mpiutil import register_finalize_handler, get_comm_rank_root
 from pyfr.partitioners import BasePartitioner, get_partitioner
+from pyfr.parallel_partitioners import BaseParallelPartitioner, get_parallel_partitioner
 from pyfr.progress_bar import ProgressBar
 from pyfr.rank_allocator import get_rank_allocation
 from pyfr.readers import BaseReader, get_reader_by_name, get_reader_by_extn
@@ -56,6 +57,13 @@ def main():
                               default=[], metavar='key:value',
                               help='partitioner-specific option')
     ap_partition.set_defaults(process=process_partition)
+
+    # Parallel partition command
+    ap_partition = sp.add_parser('parallel_partition', help='parallel_partition --help')
+    ap_partition.add_argument('np', help='number of partitions')
+    ap_partition.add_argument('mesh', help='input mesh file')
+    ap_partition.add_argument(dest='outd', help='output directory')
+    ap_partition.set_defaults(process=process_parallel_partition)
 
     # Export command
     ap_export = sp.add_parser('export', help='export --help',
@@ -175,6 +183,54 @@ def process_partition(args):
             for k, v in data.items():
                 f[k] = v
 
+def process_parallel_partition(args):
+    # Ensure outd is a directory
+    if not os.path.isdir(args.outd):
+        raise ValueError('Invalid output directory')
+
+    nparts = int(args.np)
+
+    # Create the partitioner
+    for name in sorted(cls.name for cls in subclasses(BaseParallelPartitioner)):
+        try:
+            part = get_parallel_partitioner(name, nparts)
+            break
+        except OSError:
+            pass
+    else:
+        raise RuntimeError('No parallel_partitioners available')
+
+    # Prefork to allow us to exec processes after MPI is initialised
+    if hasattr(os, 'fork'):
+        from pytools.prefork import enable_prefork
+
+        enable_prefork()
+
+    # Import but do not initialise MPI
+    from mpi4py import MPI
+
+    # Manually initialise MPI
+    MPI.Init()
+
+    # Ensure MPI is suitably cleaned up
+    register_finalize_handler()
+
+    # Get the number of MPI ranks.
+    comm, rank, root = get_comm_rank_root()
+    print('nparts = %d, comm.size = %d, rank = %d, root = %d' % (nparts,
+          comm.size, rank, root))
+    if nparts != comm.size:
+        raise RuntimeError('Asking for %d partitions but running with '
+                           '%d MPI ranks' % (nparts, comm.size))
+
+    # Get the total number of elements in the mesh.
+    mesh = NativeReader(args.mesh)
+    print(mesh.partition_info('spt'))
+    nel = sum([n[0] for et, n in mesh.partition_info('spt').items()])
+    print('nel = %d' % nel)
+
+    # Partition the mesh
+    #mesh, part_soln_fn = part.partition(NativeReader(args.mesh))
 
 def process_export(args):
     # Get writer instance by specified type or outf extension

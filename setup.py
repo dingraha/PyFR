@@ -38,6 +38,7 @@ modules = [
     'pyfr.plugins',
     'pyfr.quadrules',
     'pyfr.readers',
+    'pyfr.parallel_partitioners',
     'pyfr.partitioners',
     'pyfr.scripts',
     'pyfr.solvers',
