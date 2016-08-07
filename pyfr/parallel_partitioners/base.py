@@ -10,15 +10,15 @@ from pyfr.mpiutil import get_comm_rank_root
 
 Graph = namedtuple('Graph', ['vtab', 'etab', 'vwts', 'ewts'])
 
-def decomp_idx(l, n):
+
+def decomp_idx(Ntotal, Nsections):
     # Return indices that would split a thing of length l into n parts.
     # Shamelessly stolen from NumPy's array_split function:
     # http://docs.scipy.org/doc/numpy/reference/generated/numpy.array_split.html
-    l_each_section, extras = divmod(l, n)
+    Neach_section, extras = divmod(Ntotal, Nsections)
     section_sizes = ([0] +
-                     extras * [l_each_section + 1] +
-                     (l - extras) * [l_each_section]
-    )
+                     extras * [Neach_section+1] +
+                     (Nsections-extras) * [Neach_section])
     div_points = np.array(section_sizes).cumsum()
     return tuple(div_points)
 
@@ -86,19 +86,6 @@ class BaseParallelPartitioner(object):
                 el_d[tel] = decomp_idx(nel[0], self.nparts)
 
             print("rank = {}, el_d = {}".format(rank, el_d))
-
-            # Now, the next thing to do: push all the data around. I
-            # know where it needs to go now, I think. So, I'd need to
-            # start receives for all the elements I want, and sends for
-            # all the elements I don't want. So that would mean I need
-            # to learn a bit about MPI. Wait: do I know who has the
-            # data? The sender knows where it will go, and the receiver
-            # has no idea. Actually, there'll be multiple senders with
-            # data that the receiver needs. So how will it know when to
-            # stop waiting for a receive? That's an interesting puzzle.
-            # Hmm... is this what MPI_GATHER is for? I think it might
-            # be. But does MPI_GATHER require that all processes send
-            # the same amount of data? There's also MPI_GATHERV.
 
         # Short circuit
         else:
