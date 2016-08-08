@@ -59,11 +59,10 @@ def main():
     ap_partition.set_defaults(process=process_partition)
 
     # Parallel partition command
-    ap_partition = sp.add_parser('parallel_partition', help='parallel_partition --help')
-    ap_partition.add_argument('np', help='number of partitions')
-    ap_partition.add_argument('mesh', help='input mesh file')
-    ap_partition.add_argument(dest='outd', help='output directory')
-    ap_partition.set_defaults(process=process_parallel_partition)
+    ap_parallel_partition = sp.add_parser('parallel_partition', help='parallel_partition --help')
+    ap_parallel_partition.add_argument('mesh', help='input mesh file')
+    ap_parallel_partition.add_argument(dest='outd', help='output directory')
+    ap_parallel_partition.set_defaults(process=process_parallel_partition)
 
     # Export command
     ap_export = sp.add_parser('export', help='export --help',
@@ -188,18 +187,6 @@ def process_parallel_partition(args):
     if not os.path.isdir(args.outd):
         raise ValueError('Invalid output directory')
 
-    nparts = int(args.np)
-
-    # Create the partitioner
-    for name in sorted(cls.name for cls in subclasses(BaseParallelPartitioner)):
-        try:
-            part = get_parallel_partitioner(name, nparts)
-            break
-        except OSError:
-            pass
-    else:
-        raise RuntimeError('No parallel_partitioners available')
-
     # Prefork to allow us to exec processes after MPI is initialised
     if hasattr(os, 'fork'):
         from pytools.prefork import enable_prefork
@@ -214,6 +201,16 @@ def process_parallel_partition(args):
 
     # Ensure MPI is suitably cleaned up
     register_finalize_handler()
+
+    # Create the partitioner
+    for name in sorted(cls.name for cls in subclasses(BaseParallelPartitioner)):
+        try:
+            part = get_parallel_partitioner(name)
+            break
+        except OSError:
+            pass
+    else:
+        raise RuntimeError('No parallel_partitioners available')
 
     # Partition the mesh
     mesh, part_soln_fn = part.partition(NativeReader(args.mesh))
