@@ -102,33 +102,42 @@ class BasePartitioner(object):
     def _construct_graph(self, mesh):
         print('inside _construct_graph')
         # Edges of the dual graph
+        # The meaning of the fields: 
+        #   f0: element type (triangle, quad, tet, etc.)
+        #   f1: element ID
+        #   f3: local face index for the connection
+        #   f4: mysterious flag
+        # The first dimension always has a size of 2, and indicates the
+        # two elements involved in the connection. The second dimension
+        # indicates the connection number.
         con = mesh['con_p0'].astype('U4,i4,i1,i1')
-        print('con = {}'.format(con))
+        print('con =\n{}'.format(con))
         print('con.shape = {}'.format(con.shape))
         con = np.hstack([con, con[::-1]])
-        print('con after hstack = {}'.format(con))
+        print('con after hstack =\n{}'.format(con))
+        print('con after hstack.shape = {}'.format(con.shape))
         # Now con is in the same format as before, but the interfaces
         # are duplicated (a -> b and b -> a).
 
         # Sort by the left hand side
         print(type(con))
         print(type(con[0]))
-        print(con['f0'])
         print(con['f1'])
         print(con['f2'])
         print(con['f3'])
         print('con[\'f0\'][0] = {}'.format(con['f0'][0]))
         print('con[\'f1\'][0] = {}'.format(con['f1'][0]))
-        # I think this sorts the interfaces first by the element ID, and
-        # second by element type.
+        # I think this sorts the interfaces first by the element type, and
+        # second by element ID. But for the "left hand size," which are
+        # the elements of con[0,:]. Is that right? Yes, looks like it.
         idx = np.lexsort([con['f0'][0], con['f1'][0]])
         con = con[:, idx]
-        print('con after lexsort = {}'.format(con))
+        print('con after lexsort =\n{}'.format(con))
 
         # Left and right hand side element types/indicies
         lhs, rhs = con[['f0', 'f1']]
-        print('lhs = {}'.format(lhs))
-        print('rhs = {}'.format(rhs))
+        print('lhs =\n{}'.format(lhs))
+        print('rhs =\n{}'.format(rhs))
 
         # Compute vertex offsets
         print('lhs[1:] = {}'.format(lhs[1:]))
