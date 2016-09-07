@@ -112,10 +112,9 @@ class BasePartitioner(object):
         # indicates the connection number.
         con = mesh['con_p0'].astype('U4,i4,i1,i1')
         print('con =\n{}'.format(con))
-        print('con.shape = {}'.format(con.shape))
+        print('con.shape =\n{}'.format(con.shape))
         con = np.hstack([con, con[::-1]])
         print('con after hstack =\n{}'.format(con))
-        print('con after hstack.shape = {}'.format(con.shape))
         # Now con is in the same format as before, but the interfaces
         # are duplicated (a -> b and b -> a).
 
@@ -125,8 +124,8 @@ class BasePartitioner(object):
         print(con['f1'])
         print(con['f2'])
         print(con['f3'])
-        print('con[\'f0\'][0] = {}'.format(con['f0'][0]))
-        print('con[\'f1\'][0] = {}'.format(con['f1'][0]))
+        print('con[\'f0\'][0] =\n{}'.format(con['f0'][0]))
+        print('con[\'f1\'][0] =\n{}'.format(con['f1'][0]))
         # I think this sorts the interfaces first by the element type, and
         # second by element ID. But for the "left hand size," which are
         # the elements of con[0,:]. Is that right? Yes, looks like it.
@@ -140,8 +139,8 @@ class BasePartitioner(object):
         print('rhs =\n{}'.format(rhs))
 
         # Compute vertex offsets
-        print('lhs[1:] = {}'.format(lhs[1:]))
-        print('lhs[:-1] = {}'.format(lhs[:-1]))
+        print('lhs[1:]  =\n{}'.format(lhs[1:]))
+        print('lhs[:-1] =\n{}'.format(lhs[:-1]))
         vtab = np.where(lhs[1:] != lhs[:-1])[0]
         vtab = np.concatenate(([0], vtab + 1, [len(lhs)]))
 
