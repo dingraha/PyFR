@@ -103,10 +103,10 @@ class BasePartitioner(object):
         print('inside _construct_graph')
         # Edges of the dual graph
         con = mesh['con_p0'].astype('U4,i4,i1,i1')
-        print('con = {}'.format(con))
-        print('con.shape = {}'.format(con.shape))
+        print('con =\n{}'.format(con))
+        print('con.shape =\n{}'.format(con.shape))
         con = np.hstack([con, con[::-1]])
-        print('con after hstack = {}'.format(con))
+        print('con after hstack =\n{}'.format(con))
         # Now con is in the same format as before, but the interfaces
         # are duplicated (a -> b and b -> a).
 
@@ -117,22 +117,23 @@ class BasePartitioner(object):
         print(con['f1'])
         print(con['f2'])
         print(con['f3'])
-        print('con[\'f0\'][0] = {}'.format(con['f0'][0]))
-        print('con[\'f1\'][0] = {}'.format(con['f1'][0]))
+        print('con[\'f0\'][0] =\n{}'.format(con['f0'][0]))
+        print('con[\'f1\'][0] =\n{}'.format(con['f1'][0]))
         # I think this sorts the interfaces first by the element ID, and
-        # second by element type.
+        # second by element type. Or maybe first by element type, second
+        # by element ID.
         idx = np.lexsort([con['f0'][0], con['f1'][0]])
         con = con[:, idx]
-        print('con after lexsort = {}'.format(con))
+        print('con after lexsort =\n{}'.format(con))
 
         # Left and right hand side element types/indicies
         lhs, rhs = con[['f0', 'f1']]
-        print('lhs = {}'.format(lhs))
-        print('rhs = {}'.format(rhs))
+        print('lhs =\n{}'.format(lhs))
+        print('rhs =\n{}'.format(rhs))
 
         # Compute vertex offsets
-        print('lhs[1:] = {}'.format(lhs[1:]))
-        print('lhs[:-1] = {}'.format(lhs[:-1]))
+        print('lhs[1:]  =\n{}'.format(lhs[1:]))
+        print('lhs[:-1] =\n{}'.format(lhs[:-1]))
         vtab = np.where(lhs[1:] != lhs[:-1])[0]
         vtab = np.concatenate(([0], vtab + 1, [len(lhs)]))
 
