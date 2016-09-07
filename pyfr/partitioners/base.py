@@ -102,6 +102,14 @@ class BasePartitioner(object):
     def _construct_graph(self, mesh):
         print('inside _construct_graph')
         # Edges of the dual graph
+        # The meaning of the fields: 
+        #   f0: element type (triangle, quad, tet, etc.)
+        #   f1: element ID
+        #   f3: local face index for the connection
+        #   f4: mysterious flag
+        # The first dimension always has a size of 2, and indicates the
+        # two elements involved in the connection. The second dimension
+        # indicates the connection number.
         con = mesh['con_p0'].astype('U4,i4,i1,i1')
         print('con =\n{}'.format(con))
         print('con.shape =\n{}'.format(con.shape))
@@ -113,15 +121,14 @@ class BasePartitioner(object):
         # Sort by the left hand side
         print(type(con))
         print(type(con[0]))
-        print(con['f0'])
         print(con['f1'])
         print(con['f2'])
         print(con['f3'])
         print('con[\'f0\'][0] =\n{}'.format(con['f0'][0]))
         print('con[\'f1\'][0] =\n{}'.format(con['f1'][0]))
-        # I think this sorts the interfaces first by the element ID, and
-        # second by element type. Or maybe first by element type, second
-        # by element ID.
+        # I think this sorts the interfaces first by the element type, and
+        # second by element ID. But for the "left hand size," which are
+        # the elements of con[0,:]. Is that right? Yes, looks like it.
         idx = np.lexsort([con['f0'][0], con['f1'][0]])
         con = con[:, idx]
         print('con after lexsort =\n{}'.format(con))
