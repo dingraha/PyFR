@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from collections import Counter, defaultdict, namedtuple
+from collections import Counter, OrderedDict, namedtuple
 import re
 import uuid
 
@@ -8,7 +8,7 @@ import numpy as np
 
 from pyfr.mpiutil import get_comm_rank_root
 
-Graph = namedtuple('Graph', ['vtab', 'etab', 'vwts', 'ewts'])
+Graph = namedtuple('Graph', ['vdist', 'vtab', 'etab', 'vwts', 'ewts'])
 
 
 def split(Ntotal, Nsections):
@@ -33,10 +33,7 @@ class BaseParallelPartitioner(object):
 
         self.nparts = comm.size
 
-    def _read_partial_con(self, mesh):
-        # Get the number of MPI ranks.
-        comm, rank, root = get_comm_rank_root()
-
+    def _read_partial_con(self, mesh, rank):
         # Number of face connections.
         nf = mesh['con_p0'].shape[1]
         if rank == 0:
@@ -51,23 +48,24 @@ class BaseParallelPartitioner(object):
         return con
 
 
-    def _distribute_con(self, mesh):
+    def _distribute_con(self, mesh, comm, rank, root):
         nparts = self.nparts
 
-        # Handy MPI stuff.
-        comm, rank, root = get_comm_rank_root()
-
         # Read in a subset of the ``con_p0`` dataset.
-        con = self._read_partial_con(mesh)
+        con = self._read_partial_con(mesh, rank)
 
         # Duplicate the connections (b -> a for each a -> b).
         con = np.hstack([con, con[::-1]])
 
         # Decide which elements belong to each MPI rank (Element Type to
         # Element Range MAP).
-        etermap = {et: split(en[0], nparts) for et, en in mesh.partition_info('spt').items()}
+        #etermap = {et: split(en[0], nparts) for et, en in mesh.partition_info('spt').items()}
+        etermap = OrderedDict()
+        part_info = mesh.partition_info('spt')
+        for et in sorted(part_info.keys()):
+            etermap[et] = split(part_info[et][0], nparts)
 
-        if rank == 0:
+        if rank == root:
             print("etermap = {}".format(etermap))
 
         # So, now each MPI process will distribute the interface
@@ -78,8 +76,9 @@ class BaseParallelPartitioner(object):
             # non-blocking version. Is there? Yes, but only in MPI3, I
             # think. And mpi4py doesn't appear to have it.
 
-            # Send all the connections that MPI rank `brank` will own.
-            for et in sorted(etermap.keys()):
+            # Loop over each Element Type, sending all the connections
+            # that MPI rank `brank` will own.
+            for et in etermap.keys():
                 # Min and max element IDs that `brank` will own.
                 emin, emax = etermap[et][brank], etermap[et][brank+1]
 
@@ -96,77 +95,33 @@ class BaseParallelPartitioner(object):
                 # Send the connections.
                 conrecv = comm.gather(consend, root=brank)
                 if rank == brank:
-                    conrecv = np.hstack(conrecv)
-                    print('conrecv(rank={}) =\n{}'.format(rank, conrecv))
+                    # Collapse each MPI process's part of the con_p0
+                    # array into one array, and save it.
+                    con_ret = np.hstack(conrecv)
+                    print('con_ret(rank={}) =\n{}'.format(rank, con_ret))
                 
-
-#       # Build up a map of interfaces.
-#       con_d = defaultdict(list)
-#       for el, er in zip(*con):
-#           lid = (el[0], el[1])
-#           rid = (er[0], er[1])
-#           con_d[lid].append(rid)
-#           con_d[rid].append(lid)
-
-#       con_d_part = defaultdict(list)
-#       for base_rank in range(self.nparts):
-#           for tel in sorted(el_d.keys()):
-#               emin, emax = el_d[tel][base_rank], el_d[tel][base_rank+1]
-#               el_to_send = {(et, ei): elems for (et, ei), elems in con_d.items() if ei >= emin and ei < emax and et == tel}
-
-#               ret = comm.gather(el_to_send, root=base_rank)
-#               if rank == base_rank:
-#                   for cons in ret:
-#                       for node, edges in cons.items():
-#                           con_d_part[node] += edges
-
-
-#       print("rank = {}, con_d_part = {}".format(rank, con_d_part))
-
+        # All done: RETurn the CONnectivity array.
+        return con_ret, etermap
 
 
     def _partition_graph(self, graph, partwts):
         pass
 
     
-    def _construct_partial_graph(self, mesh, rank):
+    def _construct_partial_graph(self, con, etermap, rank):
 
-        # Figure out which part of the mesh is ours.
-        nf = mesh['con_p0'].shape[1]
-        div_points = split(nf, self.nparts)[rank:rank+2]
+        # First thing: construct the array that describes how the graph
+        # vertices are distributed among the processes.
+        etoffmap = [en[-1] for en in etermap.values()]
+        etoffmap = np.array([0] + etoffmap).cumsum()
+        etoffmap = {et: off for et, off in zip(etermap.keys(), etoffmap)}
 
-        # Edges of the dual graph
-        con = mesh['con_p0'][:,slice(*div_points)].astype('U4,i4,i1,i1')
-        con = np.hstack([con, con[::-1]])
-        # Now con is in the same format as before, but the interfaces
-        # are duplicated (a -> b and b -> a).
+        #vdist = [emin + etoffmap[et] for et, (emin, emax) in
+        #        etermap.items()]
+        #if rank == 0:
+        #    print(vdist)
 
-        # Sort by the left hand side
-        # I think this sorts the interfaces first by the element ID, and
-        # second by element type. Or maybe first by element type, second
-        # by element ID.
-        idx = np.lexsort([con['f0'][0], con['f1'][0]])
-        con = con[:, idx]
-
-        # Left and right hand side element types/indicies
-        lhs, rhs = con[['f0', 'f1']]
-
-        # Compute vertex offsets
-        vtab = np.where(lhs[1:] != lhs[:-1])[0]
-        vtab = np.concatenate(([0], vtab + 1, [len(lhs)]))
-
-        # Compute the element type/index to vertex number map
-        vetimap = [tuple(lhs[i]) for i in vtab[:-1]]
-        etivmap = {k: v for v, k in enumerate(vetimap)}
-
-        # Prepare the list of edges for each vertex
-        etab = np.array([etivmap[tuple(r)] for r in rhs])
-
-        # Prepare the list of vertex and edge weights
-        vwts = np.array([self._ele_wts[t] for t, i in vetimap])
-        ewts = np.ones_like(etab)
-
-        return Graph(vtab, etab, vwts, ewts), vetimap
+        return None, None
 
 
     def partition(self, mesh):
@@ -186,52 +141,16 @@ class BaseParallelPartitioner(object):
                 raise RuntimeError('Mesh has %d partitions, but '
                                    'parallel_partition supports only 1' % (nparts_cur,))
 
-            # Read in a subset of the ``con_p0`` dataset.
-            #nf = mesh['con_p0'].shape[1]
-            #div_points = split(nf, self.nparts)[rank:rank+2]
-            #con = mesh['con_p0'][:,slice(*div_points)].astype('U4,i4,i1,i1')
+            con, etermap = self._distribute_con(mesh, comm, rank, root)
 
-            # Start building up the graph.
-            #con_d = defaultdict(list)
-            #for el, er in zip(*con):
-            #    lid = (el[0], el[1])
-            #    rid = (er[0], er[1])
-            #    con_d[lid].append(rid)
-            #    con_d[rid].append(lid)
-
-            ## Decide which elements will be ours. Need to look at the
-            ## shape point datasets. Those all will be named
-            ## ``spt_<element type>_p0``. So
-            #el_d = {}
-            #for tel, nel in mesh.partition_info('spt').items():
-            #    el_d[tel] = split(nel[0], self.nparts)
-
-            #con_d_part = defaultdict(list)
-            #for base_rank in range(self.nparts):
-            #    for tel in sorted(el_d.keys()):
-            #        emin, emax = el_d[tel][base_rank], el_d[tel][base_rank+1]
-            #        el_to_send = {(et, ei): elems for (et, ei), elems in con_d.items() if ei >= emin and ei < emax and et == tel}
-
-            #        ret = comm.gather(el_to_send, root=base_rank)
-            #        if rank == base_rank:
-            #            for cons in ret:
-            #                for node, edges in cons.items():
-            #                    con_d_part[node] += edges
-
-            #print("rank = {}, con_d_part = {}".format(rank, con_d_part))
-
-            #pgraph, vetimap = self._construct_partial_graph(mesh, rank)
-            #print("rank = {}, pgraph = {}, vetimap = {}".format(rank,
-            #    pgraph, vetimap))
-
-            self._distribute_con(mesh)
+            graph, vetimap = self._construct_partial_graph(con, etermap, rank)
 
             # Dummy for now.
             newmesh = mesh
 
         # Short circuit
-        #else:
-        #    newmesh = mesh
+        else:
+            newmesh = mesh
 
         # This doesn't work right now, I think because I'm using a
         # read-only .pyfrm file, and I'm not copying the old mesh object
