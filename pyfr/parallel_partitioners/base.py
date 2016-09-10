@@ -118,8 +118,13 @@ class BaseParallelPartitioner(object):
 
         #vdist = [emin + etoffmap[et] for et, (emin, emax) in
         #        etermap.items()]
-        #if rank == 0:
-        #    print(vdist)
+        vdist = [0,]
+        for et, erange in etermap.items():
+            for emax in erange[1:]:
+                vdist.append(emax + etoffmap[et])
+        vdist = np.array(vdist)
+        if rank == 0:
+            print("vdist =\n{}".format(vdist))
 
         return None, None
 
