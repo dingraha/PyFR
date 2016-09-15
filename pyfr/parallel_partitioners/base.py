@@ -59,7 +59,6 @@ class BaseParallelPartitioner(object):
 
         # Decide which elements belong to each MPI rank (Element Type to
         # Element Range MAP).
-        #etermap = {et: split(en[0], nparts) for et, en in mesh.partition_info('spt').items()}
         etermap = OrderedDict()
         part_info = mesh.partition_info('spt')
         for et in sorted(part_info.keys()):
@@ -70,6 +69,7 @@ class BaseParallelPartitioner(object):
 
         # So, now each MPI process will distribute the interface
         # information. 
+        con_ret = []
         for brank in range(nparts):
             # Need to sort the keys, since we need each MPI process to
             # call MPI_GATHER in the same order. Unless there's a
@@ -94,11 +94,15 @@ class BaseParallelPartitioner(object):
 
                 # Send the connections.
                 conrecv = comm.gather(consend, root=brank)
+
                 if rank == brank:
                     # Collapse each MPI process's part of the con_p0
                     # array into one array, and save it.
-                    con_ret = np.hstack(conrecv)
-                    print('con_ret(rank={}) =\n{}'.format(rank, con_ret))
+                    con_ret.append(np.hstack(conrecv))
+                
+            if rank == brank:
+                con_ret = np.hstack(con_ret)
+                print('con_ret(rank={}) =\n{}'.format(rank, con_ret))
                 
         # All done: RETurn the CONnectivity array.
         return con_ret, etermap
@@ -111,13 +115,14 @@ class BaseParallelPartitioner(object):
     def _construct_partial_graph(self, con, etermap, rank):
 
         # First thing: construct the array that describes how the graph
-        # vertices are distributed among the processes.
+        # vertices are distributed among the processes. This is the
+        # Element Type OFFset MAP. But it's wrong -- need to fix.
         etoffmap = [en[-1] for en in etermap.values()]
         etoffmap = np.array([0] + etoffmap).cumsum()
         etoffmap = {et: off for et, off in zip(etermap.keys(), etoffmap)}
+        if rank == 0:
+            print('etoffmap = {}'.format(etoffmap))
 
-        #vdist = [emin + etoffmap[et] for et, (emin, emax) in
-        #        etermap.items()]
         vdist = [0,]
         for et, erange in etermap.items():
             for emax in erange[1:]:
