@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from collections import Counter, OrderedDict, namedtuple
+from collections import Counter, OrderedDict, namedtuple, defaultdict
+from itertools import cycle
 import re
 import uuid
 
@@ -59,13 +60,13 @@ class BaseParallelPartitioner(object):
 
         # Decide which elements belong to each MPI rank (Element Type to
         # Element Range MAP).
-        etermap = OrderedDict()
+        etrermap = OrderedDict()
         part_info = mesh.partition_info('spt')
         for et in sorted(part_info.keys()):
-            etermap[et] = split(part_info[et][0], nparts)
+            etrermap[et] = split(part_info[et][0], nparts)
 
         if rank == root:
-            print("etermap = {}".format(etermap))
+            print("etrermap = {}".format(etrermap))
 
         # So, now each MPI process will distribute the interface
         # information. 
@@ -78,9 +79,9 @@ class BaseParallelPartitioner(object):
 
             # Loop over each Element Type, sending all the connections
             # that MPI rank `brank` will own.
-            for et in etermap.keys():
+            for et in etrermap.keys():
                 # Min and max element IDs that `brank` will own.
-                emin, emax = etermap[et][brank], etermap[et][brank+1]
+                emin, emax = etrermap[et][brank], etrermap[et][brank+1]
 
                 # Extract the relevent interfaces from con.
                 idx = np.all(
@@ -105,31 +106,66 @@ class BaseParallelPartitioner(object):
                 print('con_ret(rank={}) =\n{}'.format(rank, con_ret))
                 
         # All done: RETurn the CONnectivity array.
-        return con_ret, etermap
+        return con_ret, etrermap
 
 
     def _partition_graph(self, graph, partwts):
         pass
 
     
-    def _construct_partial_graph(self, con, etermap, rank):
+    def _construct_partial_graph(self, con, etrermap, rank):
+        nparts = self.nparts
 
-        # First thing: construct the array that describes how the graph
-        # vertices are distributed among the processes. This is the
-        # Element Type OFFset MAP. But it's wrong -- need to fix.
-        etoffmap = [en[-1] for en in etermap.values()]
-        etoffmap = np.array([0] + etoffmap).cumsum()
-        etoffmap = {et: off for et, off in zip(etermap.keys(), etoffmap)}
+        # Partially reverse the mapping of etrermap: rank->element
+        # type->element range, instead of element type->rank->element
+        # range.
+        retermap = [[(et, (er[r], er[r+1])) for et, er in etrermap.items()] for r in range(nparts)]
+        retermap = [OrderedDict(x) for x in retermap]
         if rank == 0:
-            print('etoffmap = {}'.format(etoffmap))
+            print("retermap = {}".format(retermap))
 
-        vdist = [0,]
-        for et, erange in etermap.items():
-            for emax in erange[1:]:
-                vdist.append(emax + etoffmap[et])
-        vdist = np.array(vdist)
+        # Get the offsets.
+        retoffmap = []
+        next_id = 0
+        for eter in retermap:
+            x = OrderedDict()
+            for et, (emin, emax) in eter.items():
+                x[et] = next_id - emin
+                next_id += emax - emin
+            retoffmap.append(x)
+        if rank == 0:
+            print("retoffmap = {}".format(retoffmap))
+
+        # Get the vdist array, which tells us how the graph verticies
+        # are distributed to the MPI ranks.
+        et = next(reversed(etrermap))
+        vdist = [etermap[et][-1] + etoffmap[et] for etermap, etoffmap in zip(retermap, retoffmap)]
+        vdist = np.array([0,] + vdist)
         if rank == 0:
             print("vdist =\n{}".format(vdist))
+
+        # Edges of the dual graph. Duplicate the interfaces, so that
+        # there's b->a for every a->b.
+        con_l = np.hstack([con, con[::-1]])
+
+        # Sort by the left hand side, first by the element type, and
+        # then by element ID.
+        idx = np.lexsort([con_l['f0'][0], con_l['f1'][0]])
+        con_l = con_l[:, idx]
+
+        # Left and right hand side element types/indicies.
+        lhs, rhs = con_l[['f0', 'f1']]
+
+        # Compute vertex offsets.
+        vtab = np.where(lhs[1:] != lhs[:-1])[0]
+        vtab = np.concatenate(([0], vtab + 1, [len(lhs)]))
+        print("rank = {}: vtab =\n{}".format(rank, vtab))
+
+        # Compute the element type/index to vertex number map. 
+        #vetimap = [tuple(lhs[i]) for i in vtab[:-1]]
+        #etivmap = {k: v+vdist[rank] for v, k in enumerate(vetimap)}
+        #print("rank = {}: vetimap =\n{}".format(rank, vetimap))
+        #print("rank = {}: etivmap =\n{}".format(rank, etivmap))
 
         return None, None
 
@@ -151,9 +187,9 @@ class BaseParallelPartitioner(object):
                 raise RuntimeError('Mesh has %d partitions, but '
                                    'parallel_partition supports only 1' % (nparts_cur,))
 
-            con, etermap = self._distribute_con(mesh, comm, rank, root)
+            con, etrermap = self._distribute_con(mesh, comm, rank, root)
 
-            graph, vetimap = self._construct_partial_graph(con, etermap, rank)
+            graph, vetimap = self._construct_partial_graph(con, etrermap, rank)
 
             # Dummy for now.
             newmesh = mesh

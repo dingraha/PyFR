@@ -127,7 +127,7 @@ class BasePartitioner(object):
         print('con[\'f0\'][0] =\n{}'.format(con['f0'][0]))
         print('con[\'f1\'][0] =\n{}'.format(con['f1'][0]))
         # I think this sorts the interfaces first by the element type, and
-        # second by element ID. But for the "left hand size," which are
+        # second by element ID. But for the "left hand side," which are
         # the elements of con[0,:]. Is that right? Yes, looks like it.
         idx = np.lexsort([con['f0'][0], con['f1'][0]])
         con = con[:, idx]
