@@ -84,12 +84,14 @@ class BaseParallelPartitioner(object):
                 emin, emax = etrermap[et][brank], etrermap[et][brank+1]
 
                 # Extract the relevent interfaces from con.
-                idx = np.all(
-                        [
-                            con['f0'][0] == et,
-                            con['f1'][0] >= emin,
-                            con['f1'][0] < emax
-                        ], axis=0
+                idx = np.any(
+                        np.all(
+                            [
+                                con['f0'] == et,
+                                con['f1'] >= emin,
+                                con['f1'] < emax
+                            ], axis=0
+                        ), axis=0
                     )
                 consend = con[:, idx]
 
