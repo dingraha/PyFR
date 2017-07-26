@@ -44,6 +44,9 @@ class GmshReader(BaseReader):
         7: ('pyr', 5), 14: ('pyr', 14), 118: ('pyr', 30), 119: ('pyr', 55)
     }
 
+    # Gmsh element types to ignore (15 is a single-node point).
+    _etype_ignore = (15, )
+
     # First-order node numbers associated with each element face
     _petype_fnmap = {
         'tri': {'line': [[0, 1], [1, 2], [2, 0]]},
@@ -181,7 +184,10 @@ class GmshReader(BaseReader):
             etags, enodes = elei[3:3 + entags], elei[3 + entags:]
 
             if etype not in self._etype_map:
-                raise ValueError('Unsupported element type {}'.format(etype))
+                if etype in self._etype_ignore:
+                    continue
+                else:
+                    raise ValueError('Unsupported element type {}'.format(etype))
 
             # Physical entity type (used for BCs)
             epent = etags[0]
