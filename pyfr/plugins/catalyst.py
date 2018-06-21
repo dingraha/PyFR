@@ -29,16 +29,12 @@ class CatalystPlugin(BasePlugin):
         self.nsteps = 1
 
         # Catalyst script filename.
-        self.script = self.cfg.get(cfgsect, 'script_filename')
+        self.script = self.cfg.get(cfgsect, 'script')
 
         # Divisor
         self.divisor = self.cfg.getint(cfgsect, 'divisor')
 
-        # Underlying elements class
-        self.elementscls = intg.system.elementscls
-
         self.mesh = intg.system.mesh
-        self.soln = intg.soln
 
         self.dtype = np.float64
 
@@ -83,23 +79,24 @@ class CatalystPlugin(BasePlugin):
                 pvoptions)
 
     def _get_vtk_mesh(self):
+        # Partition number.
+        p = 0
+
         self._vtk_ugrid = vtkUnstructuredGrid()
         self._vtk_points = vtkPoints()
 
         # Get element types and array shapes
         self.mesh_inf = self.mesh.array_info('spt')
-        self.soln_inf = self.soln.array_info(self.dataprefix)
 
         # Dimensions
         self.ndims = next(iter(self.mesh_inf.values()))[1][2]
-        self.nvars = next(iter(self.soln_inf.values()))[1][1]
 
         self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
 
         # Assuming we just have one partition.
-        mk = list(self.mesh_inf.keys())[0]
+        mk = list(self.mesh_inf.keys())[p]
 
-        name = self.mesh_inf[mk][0]
+        name = self.mesh_inf[mk][p]
         mesh = self.mesh[mk].astype(self.dtype)
 
         # Dimensions
@@ -175,14 +172,17 @@ class CatalystPlugin(BasePlugin):
     def __call__(self, intg):
         self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
         if self.coProcessor.RequestDataDescription(self.dataDescription):
-            # mesh_inf and soln_inf are OrderedDicts. Looks like there's
-            # one entry per partition.
-            mk = list(self.mesh_inf.keys())[0]
-            sk = list(self.soln_inf.keys())[0]
 
-            name = self.mesh_inf[mk][0]
+            # Partition number.
+            p = 0
+
+            # mesh_inf is an OrderedDict. Looks like there's one entry
+            # per partition.
+            mk = list(self.mesh_inf.keys())[p]
+
+            name = intg.system.ele_types[p]
             mesh = self.mesh[mk].astype(self.dtype)
-            soln = self.soln[sk].swapaxes(0, 1).astype(self.dtype)
+            soln = intg.soln[p].swapaxes(0, 1).astype(self.dtype)
 
             # Dimensions
             nspts, neles = mesh.shape[:2]

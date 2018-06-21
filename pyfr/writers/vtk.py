@@ -189,7 +189,9 @@ class VTKWriter(BaseWriter):
         return off
 
     def _write_data(self, vtuf, mk, sk):
+        print("mk = {}, sk = {}".format(mk, sk))
         name = self.mesh_inf[mk][0]
+        print("name = {}".format(name))
         mesh = self.mesh[mk].astype(self.dtype)
         soln = self.soln[sk].swapaxes(0, 1).astype(self.dtype)
 
