@@ -1,6 +1,6 @@
 import numpy as np
 
-from vtk import vtkUnstructuredGrid, vtkPoints
+from vtk import vtkUnstructuredGrid, vtkPoints, vtkMultiBlockDataSet
 from vtkmodules.vtkPVPythonCatalystPython import vtkCPPythonScriptPipeline
 from vtk.util.numpy_support import numpy_to_vtk
 import paraview
@@ -9,6 +9,7 @@ from paraview.vtk.vtkPVCatalyst import vtkCPProcessor, vtkCPDataDescription
 from pyfr.shapes import BaseShape
 from pyfr.util import memoize, subclass_where
 from pyfr.writers.vtk import BaseShapeSubDiv
+from pyfr.mpiutil import get_comm_rank_root
 
 from pyfr.plugins.base import BasePlugin
 
@@ -34,6 +35,11 @@ class CatalystPlugin(BasePlugin):
         # Divisor
         self.divisor = self.cfg.getint(cfgsect, 'divisor')
 
+        # MPI info
+        comm, rank, root = get_comm_rank_root()
+        self._mpi_size = comm.size
+        self._mpi_rank = rank
+
         self.mesh = intg.system.mesh
 
         self.dtype = np.float64
@@ -48,7 +54,7 @@ class CatalystPlugin(BasePlugin):
         self.dataDescription.AddInput("input")
 
         self.dataDescription.GetInputDescriptionByName("input").SetGrid(
-            self._vtk_ugrid)
+            self._vtk_mbds)
 
         pipeline = vtkCPPythonScriptPipeline()
         pipeline.Initialize(self.script)
@@ -80,10 +86,10 @@ class CatalystPlugin(BasePlugin):
 
     def _get_vtk_mesh(self):
         # Partition number.
-        p = 0
+        rank = self._mpi_rank
 
-        self._vtk_ugrid = vtkUnstructuredGrid()
-        self._vtk_points = vtkPoints()
+        vtk_ugrid = vtkUnstructuredGrid()
+        vtk_points = vtkPoints()
 
         # Get element types and array shapes
         self.mesh_inf = self.mesh.array_info('spt')
@@ -94,9 +100,9 @@ class CatalystPlugin(BasePlugin):
         self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
 
         # Assuming we just have one partition.
-        mk = list(self.mesh_inf.keys())[p]
+        mk = list(self.mesh_inf.keys())[rank]
 
-        name = self.mesh_inf[mk][p]
+        name = self.mesh_inf[mk][0]
         mesh = self.mesh[mk].astype(self.dtype)
 
         # Dimensions
@@ -120,7 +126,7 @@ class CatalystPlugin(BasePlugin):
         vpts = vpts.swapaxes(0, 1)
         vpts = vpts.reshape(-1, vpts.shape[-1])
         for i, p in enumerate(vpts):
-            self._vtk_points.InsertPoint(i, p)
+            vtk_points.InsertPoint(i, p)
 
         # Perform the sub division
         subdvcls = subclass_where(BaseShapeSubDiv, name=name)
@@ -147,8 +153,12 @@ class CatalystPlugin(BasePlugin):
 
         # Set the connectivity information.
         for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
-            self._vtk_ugrid.InsertNextCell(typ, npc, con)
-        self._vtk_ugrid.SetPoints(self._vtk_points)
+            vtk_ugrid.InsertNextCell(typ, npc, con)
+        vtk_ugrid.SetPoints(vtk_points)
+
+        self._vtk_mbds = vtkMultiBlockDataSet()
+        self._vtk_mbds.SetNumberOfBlocks(self._mpi_size)
+        self._vtk_mbds.SetBlock(rank, vtk_ugrid)
 
     @memoize
     def _get_shape(self, name, nspts):
@@ -174,15 +184,20 @@ class CatalystPlugin(BasePlugin):
         if self.coProcessor.RequestDataDescription(self.dataDescription):
 
             # Partition number.
-            p = 0
+            rank = self._mpi_rank
+
+            vtk_ugrid = self._vtk_mbds.GetBlock(rank)
 
             # mesh_inf is an OrderedDict. Looks like there's one entry
             # per partition.
-            mk = list(self.mesh_inf.keys())[p]
+            mk = list(self.mesh_inf.keys())[rank]
 
-            name = intg.system.ele_types[p]
+            # Assume there's just one element type.
+            name = intg.system.ele_types[0]
             mesh = self.mesh[mk].astype(self.dtype)
-            soln = intg.soln[p].swapaxes(0, 1).astype(self.dtype)
+            # intg.soln is a list of length 1. Maybe one entry per
+            # element type?
+            soln = intg.soln[0].swapaxes(0, 1).astype(self.dtype)
 
             # Dimensions
             nspts, neles = mesh.shape[:2]
@@ -205,7 +220,7 @@ class CatalystPlugin(BasePlugin):
 
             # Set the solution data.
             visvarmap = self.elementscls.visvarmap[self.ndims]
-            pointdata = self._vtk_ugrid.GetPointData()
+            pointdata = vtk_ugrid.GetPointData()
             fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
             for arr, (fnames, vnames) in zip(fields, visvarmap):
                 varr = numpy_to_vtk(arr)

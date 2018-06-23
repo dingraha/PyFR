@@ -30,9 +30,6 @@ class VTKWriter(BaseWriter):
         self._soln_fields = list(self.elementscls.privarmap[self.ndims])
         self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
 
-        self._vtk_ugrid = vtk.vtkUnstructuredGrid()
-        self._vtk_points = vtk.vtkPoints()
-
     def _pre_proc_fields_soln(self, name, mesh, soln):
         # Convert from conservative to primitive variables
         return np.array(self.elementscls.con_to_pri(soln, self.cfg))
@@ -115,12 +112,13 @@ class VTKWriter(BaseWriter):
 
     def write_out(self):
         name, extn = os.path.splitext(self.outf)
+        parallel = extn == '.pvtu'
 
         parts = defaultdict(list)
-        print("self.mesh_info = {}".format(self.mesh_inf))
-        print("self.soln_info = {}".format(self.soln_inf))
         for mk, sk in zip(self.mesh_inf, self.soln_inf):
-            pfn = self.outf
+            prt = mk.split('_')[-1]
+            pfn = '{0}_{1}.vtu'.format(name, prt) if parallel else self.outf
+
             parts[pfn].append((mk, sk))
 
         write_s_to_fh = lambda s: fh.write(s.encode('utf-8'))
@@ -144,10 +142,33 @@ class VTKWriter(BaseWriter):
                               '<AppendedData encoding="raw">\n_')
 
                 # Data
+                other_filename = pfn[:-4] + '-foo' + pfn[-4:]
                 for mk, sk in misil:
-                    self._write_data(fh, mk, sk)
+                    self._write_data(fh, mk, sk, other_filename)
 
                 write_s_to_fh('\n</AppendedData>\n</VTKFile>')
+
+        if parallel:
+            # writer = vtk.vtkXMLPUnstructuredGridWriter()
+            # writer.SetFileName(self.outf[:-4] + '-foo' + self.outf[-4:])
+            # writer.SetNumberOfPieces(len(parts))
+            # writer.SetStartPiece(0)
+            # writer.SetEndPiece(len(parts)-1)
+            with open(self.outf, 'wb') as fh:
+                write_s_to_fh('<?xml version="1.0" ?>\n<VTKFile '
+                              'byte_order="LittleEndian" '
+                              'type="PUnstructuredGrid" '
+                              'version="0.1">\n<PUnstructuredGrid>\n')
+
+                # Header
+                self._write_parallel_header(fh)
+
+                # Constitutent pieces
+                for pfn in parts:
+                    write_s_to_fh('<Piece Source="{0}"/>\n'
+                                  .format(os.path.basename(pfn)))
+
+                write_s_to_fh('</PUnstructuredGrid>\n</VTKFile>\n')
 
     def _write_darray(self, array, vtuf, dtype):
         array = array.astype(dtype)
@@ -188,10 +209,31 @@ class VTKWriter(BaseWriter):
         # Return the current offset
         return off
 
-    def _write_data(self, vtuf, mk, sk):
-        print("mk = {}, sk = {}".format(mk, sk))
+    def _write_parallel_header(self, vtuf):
+        names, types, comps = self._get_array_attrs()
+
+        write_s = lambda s: vtuf.write(s.encode('utf-8'))
+        write_s('<PPoints>\n')
+
+        # Write vtk DaraArray headers
+        for i, (n, t, s) in enumerate(zip(names, types, comps)):
+            write_s('<PDataArray Name="{0}" type="{1}" '
+                    'NumberOfComponents="{2}"/>\n'
+                    .format(self._process_name(n), t, s))
+
+            if i == 0:
+                write_s('</PPoints>\n<PCells>\n')
+            elif i == 3:
+                write_s('</PCells>\n<PPointData>\n')
+
+        write_s('</PPointData>\n')
+
+    def _write_data(self, vtuf, mk, sk, other_filename):
+
+        vtk_ugrid = vtk.vtkUnstructuredGrid()
+        vtk_points = vtk.vtkPoints()
+
         name = self.mesh_inf[mk][0]
-        print("name = {}".format(name))
         mesh = self.mesh[mk].astype(self.dtype)
         soln = self.soln[sk].swapaxes(0, 1).astype(self.dtype)
 
@@ -227,7 +269,7 @@ class VTKWriter(BaseWriter):
         vpts = vpts.swapaxes(0, 1)
         vpts = vpts.reshape(-1, vpts.shape[-1])
         for i, p in enumerate(vpts):
-            self._vtk_points.InsertPoint(i, p)
+            vtk_points.InsertPoint(i, p)
 
         # Perform the sub division
         subdvcls = subclass_where(BaseShapeSubDiv, name=name)
@@ -254,8 +296,8 @@ class VTKWriter(BaseWriter):
 
         # Write out the connectivity information.
         for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
-            self._vtk_ugrid.InsertNextCell(typ, npc, con)
-        self._vtk_ugrid.SetPoints(self._vtk_points)
+            vtk_ugrid.InsertNextCell(typ, npc, con)
+        vtk_ugrid.SetPoints(vtk_points)
 
         # Write VTU node connectivity, connectivity offsets and cell types
         self._write_darray(vtu_con, vtuf, np.int32)
@@ -269,7 +311,7 @@ class VTKWriter(BaseWriter):
 
         # Write out the solution data.
         visvarmap = self.elementscls.visvarmap[self.ndims]
-        pointdata = self._vtk_ugrid.GetPointData()
+        pointdata = vtk_ugrid.GetPointData()
         fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
         for arr, (fnames, vnames) in zip(fields, visvarmap):
             varr = numpy_to_vtk(arr)
@@ -278,8 +320,8 @@ class VTKWriter(BaseWriter):
 
         # Dump the vtk file.
         writer = vtk.vtkXMLUnstructuredGridWriter()
-        writer.SetFileName('foo.vtu')
-        writer.SetInputData(self._vtk_ugrid)
+        writer.SetFileName(other_filename)
+        writer.SetInputData(vtk_ugrid)
         writer.Write()
 
 
