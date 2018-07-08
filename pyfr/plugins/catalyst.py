@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import numpy as np
 
 from vtk import vtkUnstructuredGrid, vtkPoints, vtkMultiBlockDataSet
@@ -88,77 +90,102 @@ class CatalystPlugin(BasePlugin):
         # Partition number.
         rank = self._mpi_rank
 
-        vtk_ugrid = vtkUnstructuredGrid()
-        vtk_points = vtkPoints()
-
-        # Get element types and array shapes
-        self.mesh_inf = self.mesh.array_info('spt')
+        # Get element types and array shapes. For two element types and
+        # one partition, the keys are
+        #
+        #   ['spt_quad_p0', 'spt_tri_p0']
+        #
+        # For a four-process parallel case, it's
+        #
+        # ['spt_tri_p0', 'spt_quad_p1', 'spt_tri_p1', 'spt_tri_p2', 'spt_quad_p3', 'spt_tri_p3']
+        #
+        # self.mesh_inf = self.mesh.array_info('spt')
+        self.mesh_inf = OrderedDict()
+        for mk, mv in self.mesh.array_info('spt').items():
+            prt = int(mk.split('p')[-1])
+            if prt == rank:
+                self.mesh_inf[mk] = mv
 
         # Dimensions
         self.ndims = next(iter(self.mesh_inf.values()))[1][2]
 
         self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
 
-        # Assuming we just have one partition.
-        mk = list(self.mesh_inf.keys())[rank]
-
-        name = self.mesh_inf[mk][0]
-        mesh = self.mesh[mk].astype(self.dtype)
-
-        # Dimensions
-        nspts, neles = mesh.shape[:2]
-
-        # Sub divison points inside of a standard element
-        svpts = self._get_std_ele(name, nspts)
-        nsvpts = len(svpts)
-
-        # Generate the operator matrices
-        mesh_vtu_op = self._get_mesh_op(name, nspts, svpts)
-
-        # Calculate node locations of VTU elements
-        vpts = np.dot(mesh_vtu_op, mesh.reshape(nspts, -1))
-        vpts = vpts.reshape(nsvpts, -1, self.ndims)
-
-        # Append dummy z dimension for points in 2D
-        if self.ndims == 2:
-            vpts = np.pad(vpts, [(0, 0), (0, 0), (0, 1)], 'constant')
-
-        vpts = vpts.swapaxes(0, 1)
-        vpts = vpts.reshape(-1, vpts.shape[-1])
-        for i, p in enumerate(vpts):
-            vtk_points.InsertPoint(i, p)
-
-        # Perform the sub division
-        subdvcls = subclass_where(BaseShapeSubDiv, name=name)
-        nodes = subdvcls.subnodes(self.divisor)
-
-        # Prepare VTU cell arrays
-        vtu_con = np.tile(nodes, (neles, 1))
-        vtu_con += (np.arange(neles)*nsvpts)[:, None]
-
-        # Generate offset into the connectivity array
-        vtu_off = np.tile(subdvcls.subcelloffs(self.divisor), (neles, 1))
-        vtu_off += (np.arange(neles)*len(nodes))[:, None]
-
-        # Tile VTU cell type numbers
-        vtu_typ = np.tile(subdvcls.subcelltypes(self.divisor), neles)
-
-        # Nodes per cell array.
-        vtu_npc = np.array(
-            [subdvcls.vtk_nodes[t] for t in subdvcls.subcells(self.divisor)])
-        vtu_npc = np.tile(vtu_npc, (neles, 1)).reshape((vtu_typ.size,))
-
-        # Connectivity matrix.
-        vtu_con.shape = (vtu_typ.size, -1)
-
-        # Set the connectivity information.
-        for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
-            vtk_ugrid.InsertNextCell(typ, npc, con)
-        vtk_ugrid.SetPoints(vtk_points)
-
         self._vtk_mbds = vtkMultiBlockDataSet()
-        self._vtk_mbds.SetNumberOfBlocks(self._mpi_size)
-        self._vtk_mbds.SetBlock(rank, vtk_ugrid)
+        # How do I figure out how many block there are? Like this.
+        n_blocks = len(self.mesh.array_info('spt').keys())
+        self._vtk_mbds.SetNumberOfBlocks(n_blocks)
+
+        for mk in self.mesh_inf:
+
+            b = list(self.mesh.array_info('spt').keys()).index(mk)
+
+            vtk_ugrid = vtkUnstructuredGrid()
+            vtk_points = vtkPoints()
+
+            # name = name of the element type (e.g. 'tri', 'quad')
+            name = self.mesh_inf[mk][0]
+            mesh = self.mesh[mk].astype(self.dtype)
+
+            # Dimensions
+            nspts, neles = mesh.shape[:2]
+            # mesh.shape = (number of "standard" points per element(?,
+            # like, three for tri, four for quad), number of elements,
+            # spatial dimension(?))
+
+            # Sub divison points inside of a standard element
+            svpts = self._get_std_ele(name, nspts)
+            nsvpts = len(svpts)
+            # I think nsvpts is the number of nodes that each element
+            # will be split into. svpts is where they will be in the
+            # element local coordinate system, I think.
+
+            # Generate the operator matrices
+            mesh_vtu_op = self._get_mesh_op(name, nspts, svpts)
+
+            # Calculate node locations of VTU elements
+            vpts = np.dot(mesh_vtu_op, mesh.reshape(nspts, -1))
+            vpts = vpts.reshape(nsvpts, -1, self.ndims)
+
+            # Append dummy z dimension for points in 2D
+            if self.ndims == 2:
+                vpts = np.pad(vpts, [(0, 0), (0, 0), (0, 1)], 'constant')
+
+            vpts = vpts.swapaxes(0, 1)
+            vpts = vpts.reshape(-1, vpts.shape[-1])
+            for i, p in enumerate(vpts):
+                vtk_points.InsertPoint(i, p)
+
+            vtk_ugrid.SetPoints(vtk_points)
+
+            # Perform the sub division
+            subdvcls = subclass_where(BaseShapeSubDiv, name=name)
+            nodes = subdvcls.subnodes(self.divisor)
+            # I think nodes is the local element connectivity array,
+            # flattened.
+
+            # Prepare VTU cell arrays. vtk_con starts out as a repeat of
+            # the element-local connetivity matrix, then gets offset by
+            # the global element ID, or something.
+            vtu_con = np.tile(nodes, (neles, 1))
+            vtu_con += (np.arange(neles)*nsvpts)[:, None]
+
+            # Tile VTU cell type numbers
+            vtu_typ = np.tile(subdvcls.subcelltypes(self.divisor), neles)
+
+            # Nodes per cell array.
+            vtu_npc = np.array(
+                [subdvcls.vtk_nodes[t] for t in subdvcls.subcells(self.divisor)])
+            vtu_npc = np.tile(vtu_npc, (neles, 1)).reshape((vtu_typ.size,))
+
+            # Connectivity matrix.
+            vtu_con.shape = (vtu_typ.size, -1)
+
+            # Set the connectivity information.
+            for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
+                vtk_ugrid.InsertNextCell(typ, npc, con)
+
+            self._vtk_mbds.SetBlock(b, vtk_ugrid)
 
     @memoize
     def _get_shape(self, name, nspts):
@@ -183,49 +210,49 @@ class CatalystPlugin(BasePlugin):
         self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
         if self.coProcessor.RequestDataDescription(self.dataDescription):
 
-            # Partition number.
-            rank = self._mpi_rank
-
-            vtk_ugrid = self._vtk_mbds.GetBlock(rank)
-
             # mesh_inf is an OrderedDict. Looks like there's one entry
-            # per partition.
-            mk = list(self.mesh_inf.keys())[rank]
+            # per partition.  intg.soln is a list of length 1. Maybe one
+            # entry per element type?
+            for mk, solution in zip(self.mesh_inf, intg.soln):
 
-            # Assume there's just one element type.
-            name = intg.system.ele_types[0]
-            mesh = self.mesh[mk].astype(self.dtype)
-            # intg.soln is a list of length 1. Maybe one entry per
-            # element type?
-            soln = intg.soln[0].swapaxes(0, 1).astype(self.dtype)
+                # Block index.
+                b = list(self.mesh.array_info('spt').keys()).index(mk)
+                vtk_ugrid = self._vtk_mbds.GetBlock(b)
 
-            # Dimensions
-            nspts, neles = mesh.shape[:2]
+                name = self.mesh_inf[mk][0]
+                mesh = self.mesh[mk].astype(self.dtype)
+                soln = solution.swapaxes(0, 1).astype(self.dtype)
 
-            # Sub divison points inside of a standard element
-            svpts = self._get_std_ele(name, nspts)
-            nsvpts = len(svpts)
+                # Dimensions
+                nspts, neles = mesh.shape[:2]
 
-            soln_vtu_op = self._get_soln_op(name, nspts, svpts)
+                # Sub divison points inside of a standard element
+                svpts = self._get_std_ele(name, nspts)
+                nsvpts = len(svpts)
 
-            # Pre-process the solution
-            soln = self._pre_proc_fields_soln(name, mesh, soln).swapaxes(0, 1)
+                soln_vtu_op = self._get_soln_op(name, nspts, svpts)
 
-            # Interpolate the solution to the vis points
-            vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
-            vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
+                # Pre-process the solution
+                soln = self._pre_proc_fields_soln(
+                    name, mesh, soln).swapaxes(0, 1)
 
-            # Process the various fields
-            fields = self._post_proc_fields_soln(vsoln)
+                # Interpolate the solution to the vis points
+                vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
+                vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
 
-            # Set the solution data.
-            visvarmap = self.elementscls.visvarmap[self.ndims]
-            pointdata = vtk_ugrid.GetPointData()
-            fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
-            for arr, (fnames, vnames) in zip(fields, visvarmap):
-                varr = numpy_to_vtk(arr)
-                varr.SetName(fnames)
-                pointdata.AddArray(varr)
+                # Process the various fields
+                fields = self._post_proc_fields_soln(vsoln)
+
+                # Set the solution data.
+                visvarmap = self.elementscls.visvarmap[self.ndims]
+                pointdata = vtk_ugrid.GetPointData()
+                fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
+                # all_fields.append(fields)
+
+                for arr, (fnames, vnames) in zip(fields, visvarmap):
+                    varr = numpy_to_vtk(arr)
+                    varr.SetName(fnames)
+                    pointdata.AddArray(varr)
 
             self.coProcessor.CoProcess(self.dataDescription)
 
