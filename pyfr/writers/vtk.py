@@ -10,9 +10,6 @@ from pyfr.shapes import BaseShape
 from pyfr.util import memoize, subclass_where
 from pyfr.writers import BaseWriter
 
-import vtk
-from vtk.util.numpy_support import numpy_to_vtk
-
 
 class VTKWriter(BaseWriter):
     # Supported file types and extensions
@@ -25,14 +22,47 @@ class VTKWriter(BaseWriter):
         self.dtype = np.dtype(args.precision).type
         self.divisor = args.divisor or self.cfg.getint('solver', 'order')
 
-        self._pre_proc_fields = self._pre_proc_fields_soln
-        self._post_proc_fields = self._post_proc_fields_soln
-        self._soln_fields = list(self.elementscls.privarmap[self.ndims])
-        self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
+        # Solutions need a separate processing pipeline to other data
+        if self.dataprefix == 'soln':
+            self._pre_proc_fields = self._pre_proc_fields_soln
+            self._post_proc_fields = self._post_proc_fields_soln
+            self._soln_fields = list(self.elementscls.privarmap[self.ndims])
+            self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
+        # Otherwise we're dealing with simple scalar data
+        else:
+            self._pre_proc_fields = self._pre_proc_fields_scal
+            self._post_proc_fields = self._post_proc_fields_scal
+            self._soln_fields = self.stats.get('data', 'fields').split(',')
+            self._vtk_vars = [(k, [k]) for k in self._soln_fields]
+
+        # See if we are computing gradients
+        if args.gradients:
+            self._pre_proc_fields_ref = self._pre_proc_fields
+            self._pre_proc_fields = self._pre_proc_fields_grad
+            self._post_proc_fields = self._post_proc_fields_grad
+
+            # Update list of solution fields
+            self._soln_fields.extend(
+                '{0}-{1}'.format(f, d)
+                for f in list(self._soln_fields) for d in range(self.ndims)
+            )
+
+            # Update the list of VTK variables to solution fields
+            nf = lambda f: ['{0}-{1}'.format(f, d) for d in range(self.ndims)]
+            for var, fields in list(self._vtk_vars):
+                if len(fields) == 1:
+                    self._vtk_vars.append(('grad ' + var, nf(fields[0])))
+                else:
+                    self._vtk_vars.extend(
+                        ('grad {0} {1}'.format(var, f), nf(f)) for f in fields
+                    )
 
     def _pre_proc_fields_soln(self, name, mesh, soln):
         # Convert from conservative to primitive variables
         return np.array(self.elementscls.con_to_pri(soln, self.cfg))
+
+    def _pre_proc_fields_scal(self, name, mesh, soln):
+        return soln
 
     def _post_proc_fields_soln(self, vsoln):
         # Primitive and visualisation variable maps
@@ -43,6 +73,50 @@ class VTKWriter(BaseWriter):
         fields = []
         for fnames, vnames in visvarmap:
             ix = [privarmap.index(vn) for vn in vnames]
+
+            fields.append(vsoln[ix])
+
+        return fields
+
+    def _post_proc_fields_scal(self, vsoln):
+        return [vsoln[self._soln_fields.index(v)] for v, _ in self._vtk_vars]
+
+    def _pre_proc_fields_grad(self, name, mesh, soln):
+        # Call the reference pre-processor
+        soln = self._pre_proc_fields_ref(name, mesh, soln)
+
+        # Dimensions
+        nvars, nupts = soln.shape[:2]
+
+        # Get the shape class
+        basiscls = subclass_where(BaseShape, name=name)
+
+        # Construct an instance of the relevant elements class
+        eles = self.elementscls(basiscls, mesh, self.cfg)
+
+        # Get the smats and |J|^-1 to untransform the gradient
+        smat = eles.smat_at_np('upts').transpose(2, 0, 1, 3)
+        rcpdjac = eles.rcpdjac_at_np('upts')
+
+        # Gradient operator
+        gradop = eles.basis.m4.astype(self.dtype)
+
+        # Evaluate the transformed gradient of the solution
+        gradsoln = np.dot(gradop, soln.swapaxes(0, 1).reshape(nupts, -1))
+        gradsoln = gradsoln.reshape(self.ndims, nupts, nvars, -1)
+
+        # Untransform
+        gradsoln = np.einsum('ijkl,jkml->mikl', smat*rcpdjac, gradsoln,
+                             dtype=self.dtype, casting='same_kind')
+        gradsoln = gradsoln.reshape(nvars*self.ndims, nupts, -1)
+
+        return np.vstack([soln, gradsoln])
+
+    def _post_proc_fields_grad(self, vsoln):
+        # Prepare the fields
+        fields = []
+        for vname, vfields in self._vtk_vars:
+            ix = [self._soln_fields.index(vf) for vf in vfields]
 
             fields.append(vsoln[ix])
 
@@ -123,7 +197,6 @@ class VTKWriter(BaseWriter):
 
         write_s_to_fh = lambda s: fh.write(s.encode('utf-8'))
 
-        # misil == Mesh Info Solution Info List?
         for pfn, misil in parts.items():
             with open(pfn, 'wb') as fh:
                 write_s_to_fh('<?xml version="1.0" ?>\n<VTKFile '
@@ -142,18 +215,12 @@ class VTKWriter(BaseWriter):
                               '<AppendedData encoding="raw">\n_')
 
                 # Data
-                other_filename = pfn[:-4] + '-foo' + pfn[-4:]
                 for mk, sk in misil:
-                    self._write_data(fh, mk, sk, other_filename)
+                    self._write_data(fh, mk, sk)
 
                 write_s_to_fh('\n</AppendedData>\n</VTKFile>')
 
         if parallel:
-            # writer = vtk.vtkXMLPUnstructuredGridWriter()
-            # writer.SetFileName(self.outf[:-4] + '-foo' + self.outf[-4:])
-            # writer.SetNumberOfPieces(len(parts))
-            # writer.SetStartPiece(0)
-            # writer.SetEndPiece(len(parts)-1)
             with open(self.outf, 'wb') as fh:
                 write_s_to_fh('<?xml version="1.0" ?>\n<VTKFile '
                               'byte_order="LittleEndian" '
@@ -228,11 +295,7 @@ class VTKWriter(BaseWriter):
 
         write_s('</PPointData>\n')
 
-    def _write_data(self, vtuf, mk, sk, other_filename):
-
-        vtk_ugrid = vtk.vtkUnstructuredGrid()
-        vtk_points = vtk.vtkPoints()
-
+    def _write_data(self, vtuf, mk, sk):
         name = self.mesh_inf[mk][0]
         mesh = self.mesh[mk].astype(self.dtype)
         soln = self.soln[sk].swapaxes(0, 1).astype(self.dtype)
@@ -266,11 +329,6 @@ class VTKWriter(BaseWriter):
         # Write element node locations to file
         self._write_darray(vpts.swapaxes(0, 1), vtuf, self.dtype)
 
-        vpts = vpts.swapaxes(0, 1)
-        vpts = vpts.reshape(-1, vpts.shape[-1])
-        for i, p in enumerate(vpts):
-            vtk_points.InsertPoint(i, p)
-
         # Perform the sub division
         subdvcls = subclass_where(BaseShapeSubDiv, name=name)
         nodes = subdvcls.subnodes(self.divisor)
@@ -286,43 +344,14 @@ class VTKWriter(BaseWriter):
         # Tile VTU cell type numbers
         vtu_typ = np.tile(subdvcls.subcelltypes(self.divisor), neles)
 
-        # Nodes per cell array.
-        vtu_npc = np.array(
-            [subdvcls.vtk_nodes[t] for t in subdvcls.subcells(self.divisor)])
-        vtu_npc = np.tile(vtu_npc, (neles, 1)).reshape((vtu_typ.size,))
-
-        # Connectivity matrix.
-        vtu_con.shape = (vtu_typ.size, -1)
-
-        # Write out the connectivity information.
-        for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
-            vtk_ugrid.InsertNextCell(typ, npc, con)
-        vtk_ugrid.SetPoints(vtk_points)
-
         # Write VTU node connectivity, connectivity offsets and cell types
         self._write_darray(vtu_con, vtuf, np.int32)
         self._write_darray(vtu_off, vtuf, np.int32)
         self._write_darray(vtu_typ, vtuf, np.uint8)
 
         # Process and write out the various fields
-        fields = self._post_proc_fields(vsoln)
-        for arr in fields:
+        for arr in self._post_proc_fields(vsoln):
             self._write_darray(arr.T, vtuf, self.dtype)
-
-        # Write out the solution data.
-        visvarmap = self.elementscls.visvarmap[self.ndims]
-        pointdata = vtk_ugrid.GetPointData()
-        fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
-        for arr, (fnames, vnames) in zip(fields, visvarmap):
-            varr = numpy_to_vtk(arr)
-            varr.SetName(fnames)
-            pointdata.AddArray(varr)
-
-        # Dump the vtk file.
-        writer = vtk.vtkXMLUnstructuredGridWriter()
-        writer.SetFileName(other_filename)
-        writer.SetInputData(vtk_ugrid)
-        writer.Write()
 
 
 class BaseShapeSubDiv(object):

@@ -43,11 +43,8 @@ class CatalystPlugin(BasePlugin):
         self._mpi_rank = rank
 
         self.mesh = intg.system.mesh
-
         self.dtype = np.float64
-
         self._init_mysterious_pv_stuff()
-
         self._get_vtk_mesh()
 
         self.coProcessor = vtkCPProcessor()
@@ -215,6 +212,12 @@ class CatalystPlugin(BasePlugin):
             # entry per element type?
             for mk, solution in zip(self.mesh_inf, intg.soln):
 
+                print("mk = {}".format(mk))
+                print("solution.shape = {}".format(solution.shape))
+                # The solution shape appears to be (?, n_sol_vars,
+                # n_elements). The ? must be the number of solution
+                # points per element, then.
+
                 # Block index.
                 b = list(self.mesh.array_info('spt').keys()).index(mk)
                 vtk_ugrid = self._vtk_mbds.GetBlock(b)
@@ -247,11 +250,10 @@ class CatalystPlugin(BasePlugin):
                 visvarmap = self.elementscls.visvarmap[self.ndims]
                 pointdata = vtk_ugrid.GetPointData()
                 fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
-                # all_fields.append(fields)
 
                 for arr, (fnames, vnames) in zip(fields, visvarmap):
                     varr = numpy_to_vtk(arr)
-                    varr.SetName(fnames)
+                    varr.SetName(fnames.capitalize())
                     pointdata.AddArray(varr)
 
             self.coProcessor.CoProcess(self.dataDescription)
