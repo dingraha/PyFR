@@ -106,9 +106,8 @@ class CatalystPlugin(BasePlugin):
         # Dimensions
         self.ndims = next(iter(self.mesh_inf.values()))[1][2]
 
-        self._vtk_vars = list(self.elementscls.visvarmap[self.ndims])
-
         self._vtk_mbds = vtkMultiBlockDataSet()
+
         # How do I figure out how many block there are? Like this.
         n_blocks = len(self.mesh.array_info('spt').keys())
         self._vtk_mbds.SetNumberOfBlocks(n_blocks)
@@ -212,8 +211,8 @@ class CatalystPlugin(BasePlugin):
             # entry per element type?
             for mk, solution in zip(self.mesh_inf, intg.soln):
 
-                print("mk = {}".format(mk))
-                print("solution.shape = {}".format(solution.shape))
+                # print("mk = {}".format(mk))
+                # print("solution.shape = {}".format(solution.shape))
                 # The solution shape appears to be (?, n_sol_vars,
                 # n_elements). The ? must be the number of solution
                 # points per element, then.
@@ -226,6 +225,14 @@ class CatalystPlugin(BasePlugin):
                 mesh = self.mesh[mk].astype(self.dtype)
                 soln = solution.swapaxes(0, 1).astype(self.dtype)
 
+                # The soln shape will be (n_sol_vars,
+                # n_solution_points_per_element, n_elements)
+
+                # print("mesh.shape = {}".format(mesh.shape))
+                # print("soln.shape = {}".format(soln.shape))
+                # The mesh shape appears to be (nodes_per_element,
+                # number_of_elements, number_of_spatial_dims)
+
                 # Dimensions
                 nspts, neles = mesh.shape[:2]
 
@@ -235,22 +242,33 @@ class CatalystPlugin(BasePlugin):
 
                 soln_vtu_op = self._get_soln_op(name, nspts, svpts)
 
-                # Pre-process the solution
-                soln = self._pre_proc_fields_soln(
-                    name, mesh, soln).swapaxes(0, 1)
+                # Pre-process the solution, which hear means converting
+                # from conservative to primitive variables.
+                soln = self._pre_proc_fields_soln(soln).swapaxes(0, 1)
+                # print("soln.shape = {}".format(soln.shape))
+                # Now the soln shape will be
+                # (n_solution_points_per_element, n_sol_vars,
+                # n_elements)
+
+                # print("len(soln) = {}".format(len(soln)))
 
                 # Interpolate the solution to the vis points
                 vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
                 vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
 
-                # Process the various fields
+                # I think vsoln will have shape n_sol_vars, number of
+                # nodes in a subdivided element, number of original
+                # elements.
+                # print("vsoln.shape = {}".format(vsoln.shape))
+
+                # Process the various fields. I think this just extracts
+                # each flow variable into a list, and puts them in an
+                # order consistent with visvarmap.
                 fields = self._post_proc_fields_soln(vsoln)
 
                 # Set the solution data.
                 visvarmap = self.elementscls.visvarmap[self.ndims]
                 pointdata = vtk_ugrid.GetPointData()
-                fields = [arr.T.reshape((-1, arr.shape[0])) for arr in fields]
-
                 for arr, (fnames, vnames) in zip(fields, visvarmap):
                     varr = numpy_to_vtk(arr)
                     varr.SetName(fnames.capitalize())
@@ -258,7 +276,7 @@ class CatalystPlugin(BasePlugin):
 
             self.coProcessor.CoProcess(self.dataDescription)
 
-    def _pre_proc_fields_soln(self, name, mesh, soln):
+    def _pre_proc_fields_soln(self, soln):
         # Convert from conservative to primitive variables
         return np.array(self.elementscls.con_to_pri(soln, self.cfg))
 
@@ -272,6 +290,7 @@ class CatalystPlugin(BasePlugin):
         for fnames, vnames in visvarmap:
             ix = [privarmap.index(vn) for vn in vnames]
 
-            fields.append(vsoln[ix])
+            n_var_components = vsoln[ix].shape[0]
+            fields.append(vsoln[ix].T.reshape((-1, n_var_components)))
 
         return fields
