@@ -153,9 +153,9 @@ class CatalystPlugin(BasePlugin):
 
             vpts = vpts.swapaxes(0, 1)
             vpts = vpts.reshape(-1, vpts.shape[-1])
-            for i, p in enumerate(vpts):
-                vtk_points.InsertPoint(i, p)
-
+            # for i, p in enumerate(vpts):
+            #     vtk_points.InsertPoint(i, p)
+            vtk_points.SetData(numpy_to_vtk(vpts))
             vtk_ugrid.SetPoints(vtk_points)
 
             # Perform the sub division
