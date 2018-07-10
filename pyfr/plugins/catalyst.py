@@ -209,10 +209,12 @@ class CatalystPlugin(BasePlugin):
             # mesh_inf is an OrderedDict. Looks like there's one entry
             # per partition.  intg.soln is a list of length 1. Maybe one
             # entry per element type?
+            print("type(intg.soln) = {}".format(type(intg.soln)))
             for mk, solution in zip(self.mesh_inf, intg.soln):
 
                 # print("mk = {}".format(mk))
-                # print("solution.shape = {}".format(solution.shape))
+                print("type(solution) = {}, solution.shape = {}".format(
+                    type(solution), solution.shape))
                 # The solution shape appears to be (?, n_sol_vars,
                 # n_elements). The ? must be the number of solution
                 # points per element, then.
@@ -239,8 +241,10 @@ class CatalystPlugin(BasePlugin):
                 # Sub divison points inside of a standard element
                 svpts = self._get_std_ele(name, nspts)
                 nsvpts = len(svpts)
+                print("nsvpts = {}".format(nsvpts))
 
                 soln_vtu_op = self._get_soln_op(name, nspts, svpts)
+                print("soln_vtu_op.shape = {}".format(soln_vtu_op.shape))
 
                 # Pre-process the solution, which hear means converting
                 # from conservative to primitive variables.
@@ -254,6 +258,7 @@ class CatalystPlugin(BasePlugin):
 
                 # Interpolate the solution to the vis points
                 vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
+                print("vsoln.shape = {}".format(vsoln.shape))
                 vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
 
                 # I think vsoln will have shape n_sol_vars, number of
@@ -269,9 +274,12 @@ class CatalystPlugin(BasePlugin):
                 # Set the solution data.
                 visvarmap = self.elementscls.visvarmap[self.ndims]
                 pointdata = vtk_ugrid.GetPointData()
+                # print("pointdata = {}".format(pointdata))
                 for arr, (fnames, vnames) in zip(fields, visvarmap):
+                    print("arr.shape = {}".format(arr.shape))
                     varr = numpy_to_vtk(arr)
                     varr.SetName(fnames.capitalize())
+                    # print("var = {}".format(varr))
                     pointdata.AddArray(varr)
 
             self.coProcessor.CoProcess(self.dataDescription)
@@ -285,10 +293,13 @@ class CatalystPlugin(BasePlugin):
         privarmap = self.elementscls.privarmap[self.ndims]
         visvarmap = self.elementscls.visvarmap[self.ndims]
 
+        print("visvarmap = {}".format(visvarmap))
+
         # Prepare the fields
         fields = []
         for fnames, vnames in visvarmap:
             ix = [privarmap.index(vn) for vn in vnames]
+            print("{}, {}, {}".format(fnames, vnames, ix))
 
             n_var_components = vsoln[ix].shape[0]
             fields.append(vsoln[ix].T.reshape((-1, n_var_components)))
