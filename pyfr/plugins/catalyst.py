@@ -106,9 +106,8 @@ class CatalystPlugin(BasePlugin):
         # Dimensions
         self.ndims = next(iter(self.mesh_inf.values()))[1][2]
 
+        # Create a multiblock vtk data set.
         self._vtk_mbds = vtkMultiBlockDataSet()
-
-        # How do I figure out how many block there are? Like this.
         n_blocks = len(self.mesh.array_info('spt').keys())
         self._vtk_mbds.SetNumberOfBlocks(n_blocks)
 
@@ -249,7 +248,7 @@ class CatalystPlugin(BasePlugin):
                 # Pre-process the solution, which hear means converting
                 # from conservative to primitive variables.
                 soln = self._pre_proc_fields_soln(soln).swapaxes(0, 1)
-                # print("soln.shape = {}".format(soln.shape))
+                print("soln.shape = {}".format(soln.shape))
                 # Now the soln shape will be
                 # (n_solution_points_per_element, n_sol_vars,
                 # n_elements)
@@ -264,7 +263,7 @@ class CatalystPlugin(BasePlugin):
                 # I think vsoln will have shape n_sol_vars, number of
                 # nodes in a subdivided element, number of original
                 # elements.
-                # print("vsoln.shape = {}".format(vsoln.shape))
+                print("vsoln.shape = {}".format(vsoln.shape))
 
                 # Process the various fields. I think this just extracts
                 # each flow variable into a list, and puts them in an
