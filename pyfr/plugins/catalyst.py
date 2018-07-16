@@ -45,7 +45,7 @@ class CatalystPlugin(BasePlugin):
         self.mesh = intg.system.mesh
         self.dtype = np.float64
         self._init_mysterious_pv_stuff()
-        self._get_vtk_mesh()
+        self._get_vtk_mesh(intg)
 
         self.coProcessor = vtkCPProcessor()
 
@@ -58,6 +58,11 @@ class CatalystPlugin(BasePlugin):
         pipeline = vtkCPPythonScriptPipeline()
         pipeline.Initialize(self.script)
         self.coProcessor.AddPipeline(pipeline)
+
+        self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
+        if self.coProcessor.RequestDataDescription(self.dataDescription):
+            self._do_solutions(intg.soln)
+            self.coProcessor.CoProcess(self.dataDescription)
 
     def _init_mysterious_pv_stuff(self):
         import sys
@@ -83,7 +88,7 @@ class CatalystPlugin(BasePlugin):
                 sys.executable, CorePython.vtkProcessModule.PROCESS_BATCH,
                 pvoptions)
 
-    def _get_vtk_mesh(self):
+    def _get_vtk_mesh(self, intg):
         # Partition number.
         rank = self._mpi_rank
 
@@ -96,7 +101,6 @@ class CatalystPlugin(BasePlugin):
         #
         # ['spt_tri_p0', 'spt_quad_p1', 'spt_tri_p1', 'spt_tri_p2', 'spt_quad_p3', 'spt_tri_p3']
         #
-        # self.mesh_inf = self.mesh.array_info('spt')
         self.mesh_inf = OrderedDict()
         for mk, mv in self.mesh.array_info('spt').items():
             prt = int(mk.split('p')[-1])
@@ -111,9 +115,14 @@ class CatalystPlugin(BasePlugin):
         n_blocks = len(self.mesh.array_info('spt').keys())
         self._vtk_mbds.SetNumberOfBlocks(n_blocks)
 
+        self._vis_fields = {}
         for mk in self.mesh_inf:
 
+            # Get the VTK block number for this partition-element type
+            # combination.
             b = list(self.mesh.array_info('spt').keys()).index(mk)
+            new_mesh_inf = list(self.mesh_inf[mk]) + [b, ]
+            self.mesh_inf[mk] = tuple(new_mesh_inf)
 
             vtk_ugrid = vtkUnstructuredGrid()
             vtk_points = vtkPoints()
@@ -148,8 +157,6 @@ class CatalystPlugin(BasePlugin):
 
             vpts = vpts.swapaxes(0, 1)
             vpts = vpts.reshape(-1, vpts.shape[-1])
-            # for i, p in enumerate(vpts):
-            #     vtk_points.InsertPoint(i, p)
             vtk_points.SetData(numpy_to_vtk(vpts))
             vtk_ugrid.SetPoints(vtk_points)
 
@@ -182,6 +189,8 @@ class CatalystPlugin(BasePlugin):
 
             self._vtk_mbds.SetBlock(b, vtk_ugrid)
 
+        self._do_solutions(intg.soln, first_time=True)
+
     @memoize
     def _get_shape(self, name, nspts):
         shapecls = subclass_where(BaseShape, name=name)
@@ -204,84 +213,59 @@ class CatalystPlugin(BasePlugin):
     def __call__(self, intg):
         self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
         if self.coProcessor.RequestDataDescription(self.dataDescription):
+            self._do_solutions(intg.soln)
+            self.coProcessor.CoProcess(self.dataDescription)
 
-            # mesh_inf is an OrderedDict. Looks like there's one entry
-            # per partition.  intg.soln is a list of length 1. Maybe one
-            # entry per element type?
-            print("type(intg.soln) = {}".format(type(intg.soln)))
-            for mk, solution in zip(self.mesh_inf, intg.soln):
+    def _do_solutions(self, solutions, first_time=False):
 
-                # print("mk = {}".format(mk))
-                print("type(solution) = {}, solution.shape = {}".format(
-                    type(solution), solution.shape))
-                # The solution shape appears to be (?, n_sol_vars,
-                # n_elements). The ? must be the number of solution
-                # points per element, then.
+        for mk, solution in zip(self.mesh_inf, solutions):
 
-                # Block index.
-                b = list(self.mesh.array_info('spt').keys()).index(mk)
-                vtk_ugrid = self._vtk_mbds.GetBlock(b)
+            # Get the block index, and then the vtkUnstructuredGrid.
+            b = self.mesh_inf[mk][2]
+            vtk_ugrid = self._vtk_mbds.GetBlock(b)
 
-                name = self.mesh_inf[mk][0]
-                mesh = self.mesh[mk].astype(self.dtype)
-                soln = solution.swapaxes(0, 1).astype(self.dtype)
+            name = self.mesh_inf[mk][0]
+            mesh = self.mesh[mk].astype(self.dtype)
+            soln = solution.swapaxes(0, 1).astype(self.dtype)
 
-                # The soln shape will be (n_sol_vars,
-                # n_solution_points_per_element, n_elements)
+            # Dimensions
+            nspts, neles = mesh.shape[:2]
 
-                # print("mesh.shape = {}".format(mesh.shape))
-                # print("soln.shape = {}".format(soln.shape))
-                # The mesh shape appears to be (nodes_per_element,
-                # number_of_elements, number_of_spatial_dims)
+            # Sub divison points inside of a standard element
+            svpts = self._get_std_ele(name, nspts)
+            nsvpts = len(svpts)
 
-                # Dimensions
-                nspts, neles = mesh.shape[:2]
+            soln_vtu_op = self._get_soln_op(name, nspts, svpts)
 
-                # Sub divison points inside of a standard element
-                svpts = self._get_std_ele(name, nspts)
-                nsvpts = len(svpts)
-                print("nsvpts = {}".format(nsvpts))
+            # Pre-process the solution, which means converting from
+            # conservative to primitive variables.
+            soln = self._pre_proc_fields_soln(soln).swapaxes(0, 1)
 
-                soln_vtu_op = self._get_soln_op(name, nspts, svpts)
-                print("soln_vtu_op.shape = {}".format(soln_vtu_op.shape))
+            # Interpolate the solution to the vis points
+            vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
+            vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
 
-                # Pre-process the solution, which hear means converting
-                # from conservative to primitive variables.
-                soln = self._pre_proc_fields_soln(soln).swapaxes(0, 1)
-                print("soln.shape = {}".format(soln.shape))
-                # Now the soln shape will be
-                # (n_solution_points_per_element, n_sol_vars,
-                # n_elements)
+            # I think vsoln will have shape n_sol_vars, number of
+            # nodes in a subdivided element, number of original
+            # elements.
 
-                # print("len(soln) = {}".format(len(soln)))
+            # Process the various fields. I think this just extracts
+            # each flow variable into a list, and puts them in an
+            # order consistent with visvarmap.
+            fields = self._post_proc_fields_soln(vsoln)
 
-                # Interpolate the solution to the vis points
-                vsoln = np.dot(soln_vtu_op, soln.reshape(len(soln), -1))
-                print("vsoln.shape = {}".format(vsoln.shape))
-                vsoln = vsoln.reshape(nsvpts, -1, neles).swapaxes(0, 1)
-
-                # I think vsoln will have shape n_sol_vars, number of
-                # nodes in a subdivided element, number of original
-                # elements.
-                print("vsoln.shape = {}".format(vsoln.shape))
-
-                # Process the various fields. I think this just extracts
-                # each flow variable into a list, and puts them in an
-                # order consistent with visvarmap.
-                fields = self._post_proc_fields_soln(vsoln)
-
-                # Set the solution data.
-                visvarmap = self.elementscls.visvarmap[self.ndims]
-                pointdata = vtk_ugrid.GetPointData()
-                # print("pointdata = {}".format(pointdata))
-                for arr, (fnames, vnames) in zip(fields, visvarmap):
-                    print("arr.shape = {}".format(arr.shape))
+            # Set the solution data.
+            visvarmap = self.elementscls.visvarmap[self.ndims]
+            pointdata = vtk_ugrid.GetPointData()
+            for arr, (fnames, vnames) in zip(fields, visvarmap):
+                field_name = "{}_{}".format(mk, fnames)
+                if first_time:
+                    self._vis_fields[field_name] = arr
                     varr = numpy_to_vtk(arr)
                     varr.SetName(fnames.capitalize())
-                    # print("var = {}".format(varr))
                     pointdata.AddArray(varr)
-
-            self.coProcessor.CoProcess(self.dataDescription)
+                else:
+                    self._vis_fields[field_name][...] = arr
 
     def _pre_proc_fields_soln(self, soln):
         # Convert from conservative to primitive variables
@@ -292,13 +276,10 @@ class CatalystPlugin(BasePlugin):
         privarmap = self.elementscls.privarmap[self.ndims]
         visvarmap = self.elementscls.visvarmap[self.ndims]
 
-        print("visvarmap = {}".format(visvarmap))
-
         # Prepare the fields
         fields = []
         for fnames, vnames in visvarmap:
             ix = [privarmap.index(vn) for vn in vnames]
-            print("{}, {}, {}".format(fnames, vnames, ix))
 
             n_var_components = vsoln[ix].shape[0]
             fields.append(vsoln[ix].T.reshape((-1, n_var_components)))
