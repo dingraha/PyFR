@@ -2,9 +2,9 @@ from collections import OrderedDict
 
 import numpy as np
 
-from vtk import vtkUnstructuredGrid, vtkPoints, vtkMultiBlockDataSet
+from vtk import vtkCellArray, vtkUnstructuredGrid, vtkPoints, vtkMultiBlockDataSet
 from vtkmodules.vtkPVPythonCatalystPython import vtkCPPythonScriptPipeline
-from vtk.util.numpy_support import numpy_to_vtk
+from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
 import paraview
 from paraview.vtk.vtkPVCatalyst import vtkCPProcessor, vtkCPDataDescription
 
@@ -45,7 +45,7 @@ class CatalystPlugin(BasePlugin):
         self.mesh = intg.system.mesh
         self.dtype = np.float64
         self._init_mysterious_pv_stuff()
-        self._get_vtk_mesh(intg)
+        self._set_vtk_mesh(intg)
 
         self.coProcessor = vtkCPProcessor()
 
@@ -61,7 +61,7 @@ class CatalystPlugin(BasePlugin):
 
         self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
         if self.coProcessor.RequestDataDescription(self.dataDescription):
-            self._do_solutions(intg.soln)
+            self._set_solution(intg.soln)
             self.coProcessor.CoProcess(self.dataDescription)
 
     def _init_mysterious_pv_stuff(self):
@@ -88,8 +88,8 @@ class CatalystPlugin(BasePlugin):
                 sys.executable, CorePython.vtkProcessModule.PROCESS_BATCH,
                 pvoptions)
 
-    def _get_vtk_mesh(self, intg):
-        # Partition number.
+    def _set_vtk_mesh(self, intg):
+        # MPI rank is the partition number.
         rank = self._mpi_rank
 
         # Get element types and array shapes. For two element types and
@@ -102,27 +102,28 @@ class CatalystPlugin(BasePlugin):
         # ['spt_tri_p0', 'spt_quad_p1', 'spt_tri_p1', 'spt_tri_p2', 'spt_quad_p3', 'spt_tri_p3']
         #
         self.mesh_inf = OrderedDict()
-        for mk, mv in self.mesh.array_info('spt').items():
+        for b, (mk, mv) in enumerate(
+                self.mesh.array_info('spt').items()):
             prt = int(mk.split('p')[-1])
             if prt == rank:
-                self.mesh_inf[mk] = mv
+                self.mesh_inf[mk] = mv + (b, )
 
         # Dimensions
         self.ndims = next(iter(self.mesh_inf.values()))[1][2]
 
-        # Create a multiblock vtk data set.
+        # Create a multiblock vtk data set. One block for each element
+        # type in each partition.
         self._vtk_mbds = vtkMultiBlockDataSet()
         n_blocks = len(self.mesh.array_info('spt').keys())
         self._vtk_mbds.SetNumberOfBlocks(n_blocks)
 
+        # _vis_fields will hold the solution data for each VTK block.
         self._vis_fields = {}
         for mk in self.mesh_inf:
 
             # Get the VTK block number for this partition-element type
             # combination.
-            b = list(self.mesh.array_info('spt').keys()).index(mk)
-            new_mesh_inf = list(self.mesh_inf[mk]) + [b, ]
-            self.mesh_inf[mk] = tuple(new_mesh_inf)
+            b = self.mesh_inf[mk][-1]
 
             vtk_ugrid = vtkUnstructuredGrid()
             vtk_points = vtkPoints()
@@ -184,12 +185,18 @@ class CatalystPlugin(BasePlugin):
             vtu_con.shape = (vtu_typ.size, -1)
 
             # Set the connectivity information.
-            for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
-                vtk_ugrid.InsertNextCell(typ, npc, con)
+            # for typ, npc, con in zip(vtu_typ, vtu_npc, vtu_con):
+            #     vtk_ugrid.InsertNextCell(typ, npc, con)
+            con_with_npc = np.concatenate(
+                (vtu_npc[:, np.newaxis], vtu_con), axis=1).flatten()
+            vtk_cells = vtkCellArray()
+            vtk_cells.SetCells(
+                neles, numpy_to_vtkIdTypeArray(con_with_npc))
+            vtk_ugrid.SetCells(list(vtu_typ), vtk_cells)
 
             self._vtk_mbds.SetBlock(b, vtk_ugrid)
 
-        self._do_solutions(intg.soln, first_time=True)
+        self._set_solution(intg.soln, first_time=True)
 
     @memoize
     def _get_shape(self, name, nspts):
@@ -213,10 +220,10 @@ class CatalystPlugin(BasePlugin):
     def __call__(self, intg):
         self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
         if self.coProcessor.RequestDataDescription(self.dataDescription):
-            self._do_solutions(intg.soln)
+            self._set_solution(intg.soln)
             self.coProcessor.CoProcess(self.dataDescription)
 
-    def _do_solutions(self, solutions, first_time=False):
+    def _set_solution(self, solutions, first_time=False):
 
         for mk, solution in zip(self.mesh_inf, solutions):
 
