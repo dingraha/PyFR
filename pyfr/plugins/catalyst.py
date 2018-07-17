@@ -31,8 +31,8 @@ class CatalystPlugin(BasePlugin):
         # the Catalyst script.
         self.nsteps = 1
 
-        # Catalyst script filename.
-        self.script = self.cfg.get(cfgsect, 'script')
+        # Catalyst script filenames.
+        scripts = self.cfg.getliteral(cfgsect, 'scripts')
 
         # Divisor
         self.divisor = self.cfg.getint(cfgsect, 'divisor')
@@ -55,14 +55,12 @@ class CatalystPlugin(BasePlugin):
         self.dataDescription.GetInputDescriptionByName("input").SetGrid(
             self._vtk_mbds)
 
-        pipeline = vtkCPPythonScriptPipeline()
-        pipeline.Initialize(self.script)
-        self.coProcessor.AddPipeline(pipeline)
+        for script in scripts:
+            pipeline = vtkCPPythonScriptPipeline()
+            pipeline.Initialize(script)
+            self.coProcessor.AddPipeline(pipeline)
 
-        self.dataDescription.SetTimeData(intg.tcurr, intg.nacptsteps)
-        if self.coProcessor.RequestDataDescription(self.dataDescription):
-            self._set_solution(intg.soln)
-            self.coProcessor.CoProcess(self.dataDescription)
+        self.__call__(intg)
 
     def _init_mysterious_pv_stuff(self):
         import sys
