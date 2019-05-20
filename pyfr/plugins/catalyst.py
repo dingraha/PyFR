@@ -76,12 +76,9 @@ class CatalystPlugin(BasePlugin):
         paraview.options.batch = True
         paraview.options.symmetric = True
         if not CorePython.vtkProcessModule.GetProcessModule():
-            pvoptions = None
-            if paraview.options.batch:
-                pvoptions = CorePython.vtkPVOptions()
-                pvoptions.SetProcessType(CorePython.vtkPVOptions.PVBATCH)
-                if paraview.options.symmetric:
-                    pvoptions.SetSymmetricMPIMode(True)
+            pvoptions = CorePython.vtkPVOptions()
+            pvoptions.SetProcessType(CorePython.vtkPVOptions.PVBATCH)
+            pvoptions.SetSymmetricMPIMode(True)
             ApplicationPython.vtkInitializationHelper.Initialize(
                 sys.executable, CorePython.vtkProcessModule.PROCESS_BATCH,
                 pvoptions)
