@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 
 from pyfr.plugins.base import BasePlugin
+try:
+    from pyfr.plugins.catalyst import CatalystPlugin
+except ImportError:
+    from sys import stderr
+    print("warning: CatalystPlugin not available", file=stderr)
 from pyfr.plugins.dtstats import DtStatsPlugin
 from pyfr.plugins.fluidforce import FluidForcePlugin
 from pyfr.plugins.nancheck import NaNCheckPlugin
