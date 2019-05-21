@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import numpy as np
+
 from pyfr.solvers.baseadvec import (BaseAdvectionIntInters,
                                     BaseAdvectionMPIInters,
                                     BaseAdvectionBCInters)
@@ -82,3 +84,29 @@ class EulerCharRiemInvBCInters(EulerBaseBCInters):
 
 class EulerSlpAdiaWallBCInters(EulerBaseBCInters):
     type = 'slp-adia-wall'
+
+
+class EulerSubInflowFtpttangBCInters(EulerBaseBCInters):
+    type = 'sub-in-ftpttang'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        gamma = self.cfg.getfloat('constants', 'gamma')
+
+        # Pass boundary constants to the backend
+        self._tpl_c['cpTt'], = self._eval_opts(['cpTt'])
+        self._tpl_c['pt'], = self._eval_opts(['pt'])
+        self._tpl_c['Rdcp'] = (gamma - 1.0)/gamma
+
+        # Calculate u, v velocity components from the inflow angle
+        theta = self._eval_opts(['theta'])[0]*np.pi/180.0
+        velcomps = np.array([np.cos(theta), np.sin(theta), 1.0])
+
+        # Adjust u, v and calculate w velocity components for 3-D
+        if self.ndims == 3:
+            phi = self._eval_opts(['phi'])[0]*np.pi/180.0
+            velcomps[:2] *= np.sin(phi)
+            velcomps[2] *= np.cos(phi)
+
+        self._tpl_c['vc'] = velcomps[:self.ndims]
