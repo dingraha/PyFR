@@ -110,3 +110,12 @@ class EulerSubInflowFtpttangBCInters(EulerBaseBCInters):
             velcomps[2] *= np.cos(phi)
 
         self._tpl_c['vc'] = velcomps[:self.ndims]
+
+
+class EulerSubOutflowBCInters(EulerBaseBCInters):
+    type = 'sub-out-fp'
+
+    def __init__(self, be, lhs, elemap, cfgsect, cfg):
+        super().__init__(be, lhs, elemap, cfgsect, cfg)
+
+        self._tpl_c.update(self._exp_opts(['p'], lhs))
