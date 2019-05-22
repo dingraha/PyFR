@@ -60,7 +60,7 @@ class GmshReader(BaseReader):
     # Mappings between the node ordering of PyFR and that of Gmsh
     _nodemaps = GmshNodeMaps
 
-    def __init__(self, msh):
+    def __init__(self, msh, ignore_phys_names=None):
         if isinstance(msh, str):
             msh = open(msh)
 
@@ -76,6 +76,12 @@ class GmshReader(BaseReader):
 
         # Seen sections
         seen_sect = set()
+
+        # Names of physical entities we should ignore
+        if ignore_phys_names:
+            self._ignored_pnames = ignore_phys_names
+        else:
+            self._ignored_pnames = []
 
         for l in filter(lambda l: l != '\n', mshit):
             # Ensure we have encountered a section
@@ -126,6 +132,7 @@ class GmshReader(BaseReader):
         self._felespent = None
         self._bfacespents = {}
         self._pfacespents = defaultdict(list)
+        self._ignoredpents = []
 
         # Seen physical names
         seen = set()
@@ -152,6 +159,9 @@ class GmshReader(BaseReader):
                     raise ValueError('Invalid periodic boundary condition')
 
                 self._pfacespents[p.group(1)].append(pent)
+            # Ignored physical entities
+            elif name in self._ignored_pnames:
+                self._ignoredpents.append(pent)
             # Other boundary faces
             else:
                 self._bfacespents[name] = pent
@@ -186,7 +196,8 @@ class GmshReader(BaseReader):
             # Physical entity type (used for BCs)
             epent = etags[0]
 
-            elenodes[etype, epent].append(enodes)
+            if epent not in self._ignoredpents:
+                elenodes[etype, epent].append(enodes)
 
         self._elenodes = {k: np.array(v) for k, v in elenodes.items()}
 

@@ -35,6 +35,8 @@ def main():
     ap_import.add_argument('inmesh', type=FileType('r'),
                            help='input mesh file')
     ap_import.add_argument('outmesh', help='output PyFR mesh file')
+    ap_import.add_argument('--ignore-phys-names', help='named physical '
+                           'entities to ignore', action='append')
     types = sorted(cls.name for cls in subclasses(BaseReader))
     ap_import.add_argument('-t', dest='type', choices=types,
                            help='input file type; this is usually inferred '
@@ -115,10 +117,12 @@ def main():
 def process_import(args):
     # Get a suitable mesh reader instance
     if args.type:
-        reader = get_reader_by_name(args.type, args.inmesh)
+        reader = get_reader_by_name(args.type, args.inmesh,
+                                    ignore_phys_names=args.ignore_phys_names)
     else:
         extn = os.path.splitext(args.inmesh.name)[1]
-        reader = get_reader_by_extn(extn, args.inmesh)
+        reader = get_reader_by_extn(extn, args.inmesh,
+                                    ignore_phys_names=args.ignore_phys_names)
 
     # Get the mesh in the PyFR format
     mesh = reader.to_pyfrm()
